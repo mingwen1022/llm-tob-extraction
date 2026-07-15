@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>本地私有化文档抽取 · 模型选型与评测研究</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="nav"><div class="nav-inner">
+  <a href="index.html" class="nav-brand">🧩 LLM toB Portfolio</a>
+  <a href="index.html" class="pill active">总览</a>
+  <a href="roadmap.html" class="pill">🗺️ 实施路线</a>
+  <a href="eval_metrics.html" class="pill">📊 评测指标</a>
+  <a href="results.html" class="pill">📈 评测结果</a>
+  <a href="qwen35_architecture.html" class="pill">🧠 Qwen3.5架构</a>
+  <a href="orchestrator.html" class="pill">⚙️ 产品架构</a>
+  <a href="http://127.0.0.1:7860" target="_blank" class="pill">🚀 产品Demo</a>
+</div></nav>
+
+<div class="wrap">
+
+  <h1>面向本地私有化部署的 to-B 文档抽取</h1>
+  <p class="lead">一个"用大模型 API 还是本地微调小模型？"的<b>模型选型 + 评测研究</b>，并包装成多场景私有化抽取产品。面向 AI 产品经理岗（to-B / fintech）。</p>
+
+  <div class="badges">
+    <span class="badge green">基座 <b>Qwen3.5-4B + LoRA</b></span>
+    <span class="badge blue">数据 <b>公开 gold（CORD…）</b></span>
+    <span class="badge purple">评测 <b>自建字段级 P/R/F1</b></span>
+    <span class="badge warn">服务 <b>vLLM 多 LoRA</b></span>
+  </div>
+
+  <div class="box tip">
+    <div class="box-title">核心命题（Thesis）</div>
+    在数据不能出域的 to-B 文档抽取场景，<b>微调后的本地小模型，在"精度 × 成本 × 延迟 × 合规"的帕累托前沿上，胜过纯 prompt 和前沿大模型 API</b>。
+    项目价值不来自"LoRA 训得多难"，而来自把一次微调包装成<b>有对比、有取舍、有结论的选型决策</b>。
+  </div>
+
+  <h2>选型决策矩阵（核心产出）</h2>
+  <p>同一数据集（CORD）、同一评测器、同一完整 prompt、去数据泄漏 92 条子集 —— 本地微调 4B vs 5 个前沿/国产大模型 API，四维对比。</p>
+  <table>
+    <tr><th>模型</th><th>部署</th><th>micro-F1</th><th>schema</th><th>延迟 s/条</th><th>成本</th><th>数据出境</th><th>私有化</th></tr>
+    <tr style="background:rgba(126,231,135,.08)"><td><b>本地 4B LoRA（我们的）</b></td><td>本地</td><td><b>0.945</b></td><td><b>100%</b></td><td>10.1⁺</td><td><b>$0 边际</b></td><td>否</td><td>✅</td></tr>
+    <tr><td>Gemini-3.5-Flash</td><td>API</td><td>0.866</td><td>100%</td><td>3.2</td><td>按量</td><td>是</td><td>❌</td></tr>
+    <tr><td>Qwen3.7-Max</td><td>API</td><td>0.854</td><td>100%</td><td>24.0</td><td>按量·思考×5</td><td>是</td><td>部分</td></tr>
+    <tr><td>Claude-Sonnet-5</td><td>API</td><td>0.850</td><td>100%</td><td>4.9</td><td>按量</td><td>是</td><td>❌</td></tr>
+    <tr><td>DeepSeek-V4-Pro</td><td>API</td><td>0.838</td><td>100%</td><td>15.6</td><td>按量·思考×5</td><td>是</td><td>部分</td></tr>
+    <tr><td>Kimi-K2.6</td><td>API</td><td>0.785</td><td>87%</td><td>273.8</td><td>按量·思考</td><td>是</td><td>部分</td></tr>
+    <tr><td>基座·完整prompt</td><td>本地</td><td>0.647</td><td>47%</td><td>2.6</td><td>$0</td><td>否</td><td>✅</td></tr>
+  </table>
+  <p class="small muted">⁺ 本地延迟为 Mac 未优化开发环境（生产 vLLM 预期 &lt;1s）。国产 API 思考模式默认开，成本被推理放大 ~5-6×。详见 <a href="eval_metrics.html">评测方法论</a>。</p>
+  <div class="box tip">
+    <div class="box-title">决策结论</div>
+    在数据不能出域的金融文档抽取上，<b>微调的本地 4B 小模型在精度（0.945，超全部大模型 8-16 点）、成本（$0 边际）、合规（可私有化、不出境）三个硬轴上全面胜出</b>——这才是金融场景对的选择。延迟当前未优化、不作为卖点。</div>
+
+  <h2>已验证的关键结果</h2>
+  <ul class="check">
+    <li><b>本地 4B LoRA（0.945）超过全部 5 个前沿/国产大模型 API</b>（最高 Gemini 0.866），且 $0 边际成本、可私有化</li>
+    <li><b>微调 vs 大模型 vs prompt 全跑过</b>：prompt 写到最全基座也只 0.647，通用大模型最高 0.866，唯有微调到 0.945 —— 证明"专家小模型 &gt; 通才大模型"</li>
+    <li><b>"格式问题该微调、不是知识问题该 RAG"</b>：基座把金额输出成数字（type 错）→ 微调直接解决，教科书级判断案例</li>
+    <li><b>方法论诚实</b>：控制变量（同集/同评测器/同完整prompt/去泄漏92条）+ 如实标注局限（思考模式未统一、本地延迟未优化）</li>
+  </ul>
+
+  <h2>项目文档</h2>
+  <div class="cards">
+    <a class="card" href="roadmap.html">
+      <span class="tag">架构 · 产品化</span>
+      <h3>🗺️ 实施路线（多场景 Orchestrator）</h3>
+      <p>共享基座 + 多域 LoRA 插件 + 路由中间模型 → 多场景私有化抽取产品。含分阶段计划。</p>
+      <span class="arrow">查看 →</span>
+    </a>
+    <a class="card" href="eval_metrics.html">
+      <span class="tag">评测方法论</span>
+      <h3>📊 评测指标详解</h3>
+      <p>字段级 P/R/F1 的数学定义、micro/macro、JSON 合法率，全用真实数字举例。</p>
+      <span class="arrow">查看 →</span>
+    </a>
+    <a class="card" href="qwen35_architecture.html">
+      <span class="tag">模型深度</span>
+      <h3>🧠 Qwen3.5-4B 架构解析</h3>
+      <p>混合注意力（GDN + 全注意力）逐部位设计，以及 LoRA 具体挂在哪几层。</p>
+      <span class="arrow">查看 →</span>
+    </a>
+    <a class="card" href="results.html">
+      <span class="tag">实测数字</span>
+      <h3>📈 三域评测结果</h3>
+      <p>CORD/DuEE-fin/CCKS 三域 E0→E2 完整数字 + Orchestrator 端到端路由准确率/延迟。</p>
+      <span class="arrow">查看 →</span>
+    </a>
+    <a class="card" href="orchestrator.html">
+      <span class="tag">产品化</span>
+      <h3>⚙️ Orchestrator 产品架构</h3>
+      <p>路由+多adapter架构设计、真实调用走查、选型对比、本地运行与部署现状。</p>
+      <span class="arrow">查看 →</span>
+    </a>
+    <a class="card" href="http://127.0.0.1:7860" target="_blank">
+      <span class="tag">实时体验</span>
+      <h3>🚀 产品 Demo</h3>
+      <p>一个入口自动路由到3个领域LoRA专家，可直接点/输入的真实交互界面（需本地已启动服务）。</p>
+      <span class="arrow">查看 →</span>
+    </a>
+  </div>
+
+  <h2>端到端流程</h2>
+<pre><code>文档(PDF/扫描件) → (可选 OCR/PDF 解析) → 文本
+   → [ Qwen3.5-4B + LoRA ] → +约束解码(vLLM guided_json) → 合法 JSON
+   → 字段级评测(shared/eval.py) → 部署(vLLM 多 LoRA / Ollama demo)</code></pre>
+  <table>
+    <tr><th>环节</th><th>做法</th></tr>
+    <tr><td>数据</td><td>公开 gold（CORD gt_parse）→ 统一 (text, schema)→JSON 格式</td></tr>
+    <tr><td>训练</td><td>HF PEFT / Unsloth（Colab A100），r=16</td></tr>
+    <tr><td>可靠性</td><td>JSON-Schema 约束解码（vLLM guided_json）</td></tr>
+    <tr><td>评测</td><td>自建字段级 P/R/F1 + JSON 合法率 + 去重核查（<a href="eval_metrics.html">详解</a>）</td></tr>
+    <tr><td>部署</td><td>vLLM 多 LoRA 热插拔 / Ollama 本地 demo</td></tr>
+  </table>
+
+  <h2>现状 &amp; 下一步</h2>
+  <table>
+    <tr><th>阶段</th><th>内容</th><th>状态</th></tr>
+    <tr><td><b>核心 · 选型研究（Phase A）</b></td><td>E0/E2 + prompt 阶梯 + 5 个大模型 API + 四维决策表 + 结论</td><td><b>✅ 完成</b></td></tr>
+    <tr><td>Phase B（可选）</td><td>共享基座 bake-off（Qwen3.5 vs Llama vs Qwen2.5）</td><td>⬜</td></tr>
+    <tr><td><b>产品化层（Phase C+）</b></td><td>加 DuEE-fin/CCKS 两域 → 零样本路由 → PEFT 多adapter → Gradio 产品 demo（<a href="results.html">结果</a> / <a href="orchestrator.html">架构</a> / <a href="http://127.0.0.1:7860" target="_blank">demo</a>）</td><td><b>✅ 完成</b></td></tr>
+    <tr><td>严谨补强（可选）</td><td>vLLM 部署拿本地生产级延迟 + 统一思考设置消融 + 公开部署 demo</td><td>⬜</td></tr>
+  </table>
+  <p class="small muted">完整执行计划见 <code>doc/plans/PLAN.md</code>，完整结果与方法论见 <code>runs/baseline_results.md</code>。</p>
+
+  <div class="pager">
+    <span></span>
+    <a class="next" href="roadmap.html">下一页 <span>实施路线 →</span></a>
+  </div>
+
+</div>
+</body>
+</html>

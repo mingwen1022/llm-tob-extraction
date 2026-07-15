@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>实施路线 · 选型研究 + 多场景抽取产品</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="nav"><div class="nav-inner">
+  <a href="index.html" class="nav-brand">🧩 LLM toB Portfolio</a>
+  <a href="index.html" class="pill">总览</a>
+  <a href="roadmap.html" class="pill active">🗺️ 实施路线</a>
+  <a href="eval_metrics.html" class="pill">📊 评测指标</a>
+  <a href="results.html" class="pill">📈 评测结果</a>
+  <a href="qwen35_architecture.html" class="pill">🧠 Qwen3.5架构</a>
+  <a href="orchestrator.html" class="pill">⚙️ 产品架构</a>
+  <a href="http://127.0.0.1:7860" target="_blank" class="pill">🚀 产品Demo</a>
+</div></nav>
+
+<div class="wrap">
+
+  <h1>实施路线：选型研究（核心）+ 多场景抽取产品（产品化层）</h1>
+  <p class="lead">先在 CORD 上把"大模型 API vs 本地微调"的选型矩阵跑完（核心，单域即成立）；再横向加域 + 路由，包装成多场景私有化抽取产品。本页是 <code>doc/plans/PLAN.md</code> 的可视化。</p>
+
+  <div class="badges">
+    <span class="badge green">共享基座 <b>Qwen3.5-4B（锁死）</b></span>
+    <span class="badge blue">训练 <b>HF PEFT</b></span>
+    <span class="badge purple">服务 <b>vLLM 多 LoRA</b></span>
+    <span class="badge warn">数据 <b>公开 gold，不手搓</b></span>
+  </div>
+
+  <div class="box tip">
+    <div class="box-title">核心命题</div>
+    在数据不能出域的 to-B 文档抽取，<b>微调后的本地小模型在"精度×成本×延迟×合规"帕累托前沿上胜过纯 prompt 和前沿 API</b>。
+    选型研究在<b>单域（CORD）就完整</b>；多场景 Orchestrator 是<b>可选的产品化 stretch</b>，不是成立前提。
+  </div>
+
+  <h2>先厘清：「测不同裸模型」有两种角色，别混</h2>
+  <table>
+    <tr><th>角色</th><th>是什么</th><th>换不换</th><th>目的</th></tr>
+    <tr><td><b>① 微调共享基座</b></td><td>所有 adapter 冻结共用的底座</td><td><b>锁死</b>（Qwen3.5-4B，全程不换）</td><td>保证一卡多 LoRA 热插拔</td></tr>
+    <tr><td><b>② 每域对照基线</b></td><td>每域跑 base零样本/约束/你的LoRA/API</td><td><b>每域重跑</b></td><td>得出该域"本地 vs API"结论 → 驱动路由</td></tr>
+  </table>
+  <p class="small muted"><b>模型选型能力</b>体现在两处：(a) 一次性"共享基座 bake-off"选定 ①（Phase B）+ (b) 每域 API-vs-本地对照（②）。<b>绝不</b>每域重挑 fine-tune 基座——那会拆架构。</p>
+
+  <h2>目标系统架构（产品化层）</h2>
+<pre><code>                       ┌──────────────────────────────┐
+   输入文档(文本)  ──►  │  路由中间模型 (Router)         │
+                       │  判类型 → 选 adapter + schema  │
+                       └───────────────┬──────────────┘
+                                       │ (adapter_id, json_schema)
+                                       ▼
+              ┌────────────────────────────────────────────┐
+              │   共享基座 Qwen3.5-4B（常驻显存，冻结）        │
+              │   ┌────────┐ ┌────────┐ ┌────────┐          │
+              │   │LoRA票据│ │LoRA合同│ │LoRA发票│  …热插拔   │
+              │   └────────┘ └────────┘ └────────┘          │
+              └────────────────────────┬───────────────────┘
+                                       │ + 约束解码(vLLM guided_json)
+                                       ▼
+                                  合法 JSON 输出</code></pre>
+  <p><b>成本卖点：</b><code>1 基座 + N 个几十 MB adapter</code> vs <code>N 个独立大模型</code> vs <code>按域调 GPT-4o</code>。</p>
+
+  <h2>选型矩阵（核心产出，全在 CORD 免费 gold 上）</h2>
+  <table>
+    <tr><th>编号</th><th>配置</th><th>micro-F1</th><th>schema合法率</th><th>状态</th></tr>
+    <tr><td>E0</td><td>基座·自由</td><td>0.409</td><td>26%</td><td>✅</td></tr>
+    <tr><td>E1</td><td>基座·约束（vLLM）</td><td>—</td><td>—</td><td>⬜</td></tr>
+    <tr><td><b>E2</b></td><td><b>LoRA·自由</b></td><td><b>0.945</b></td><td><b>100%</b></td><td>✅</td></tr>
+    <tr><td>E3</td><td>LoRA·约束</td><td>—</td><td>—</td><td>⬜</td></tr>
+    <tr><td>E4</td><td>前沿 API（GPT-4o + DeepSeek/Qwen-Max）</td><td>—</td><td>—</td><td>⬜ 关键轴</td></tr>
+  </table>
+  <p class="small muted">跑完后加 <b>成本($/1k文档)</b> + <b>延迟(s/文档)</b> 两列 → 变成"精度×成本×延迟×合规"决策表。</p>
+
+  <h2>分阶段计划</h2>
+  <ol class="steps">
+    <li data-n="A">
+      <span class="phase">Phase A · 核心 · P0</span>
+      <h4>补完 CORD 选型矩阵</h4>
+      <ul class="check">
+        <li><b>E4 前沿 API 基线</b>：GPT-4o + 国产（DeepSeek-V3/Qwen-Max）同集同评测器 ← 最关键</li>
+        <li><b>E1/E3 约束解码</b>：vLLM <code>guided_json</code> 跑基座+LoRA 约束版</li>
+        <li>加<b>成本 + 延迟</b>两列 → 写决策结论</li>
+      </ul>
+      <p class="small muted">做完这步选型研究就完整（不依赖多场景）。</p>
+    </li>
+    <li data-n="B">
+      <span class="phase">Phase B · 核心</span>
+      <h4>共享基座 bake-off（一次性）</h4>
+      <p>CORD 上同一 LoRA 配方训 2–3 个候选基座：<b>Qwen3.5-4B vs Qwen2.5-7B vs Llama-3.2-3B</b> → "基座×F1×显存×速度"表 → 给"为什么锁 Qwen3.5-4B"补量化证据。<b>只做一次，别每域重做。</b></p>
+    </li>
+    <li data-n="C">
+      <span class="phase">Phase C · 产品化</span>
+      <h4>加第二个域：合同（让"多域"变真）</h4>
+      <p>数据 <b>CUAD</b>（41 类条款）或 <b>RealKIE-NDA</b>。流程：先 <code>dedup_check</code> → span 标注转 JSON → 训同基座 r=16 adapter → 跑该域 E0–E4 对照。复用 <code>shared/</code> 全流水线，只新写 <code>convert_&lt;域&gt;.py</code> + 注册 schema。</p>
+    </li>
+    <li data-n="D">
+      <span class="phase">Phase D · 产品化</span>
+      <h4>加第三个域：发票（含行项）</h4>
+      <p>数据 <b>DocILE</b>（6.7k / 55 字段 / 行项）或 <b>RealKIE-FCC</b>（11 字段）。同 Phase C 流程。</p>
+    </li>
+    <li data-n="E">
+      <span class="phase">Phase E · 产品化</span>
+      <h4>路由 + Orchestrator（中间模型）</h4>
+      <p>路由器三选一：(a) 句向量+轻量分类器 (b) 基座零样本判类 (c) 规则。vLLM 多 LoRA 热插拔。指标：路由准确率（混淆矩阵）+ 各域 F1 + 端到端 F1。</p>
+    </li>
+    <li data-n="F">
+      <span class="phase">Phase F · 呈现</span>
+      <h4>产品化 + 展示</h4>
+      <p><b>Gradio demo（这就是产品）</b>：上传文档 → 自动识别类型 → 路由到本地 adapter → 出 JSON，并实时显示"本地 LoRA vs GPT-4o API"成本/合规对比。HF Space + HF Hub + 公开 repo + 站点产品页。</p>
+    </li>
+  </ol>
+
+  <h2>优先级与取舍</h2>
+<pre><code>必做(核心选型研究):   Phase A ──► Phase B
+产品化(PM 加分层):    Phase C ──► D ──► E ──► F</code></pre>
+  <ul class="check">
+    <li><b>只做 A+B</b>：项目已成立。标题"单域抽取选型研究，架构为多域设计"。</li>
+    <li><b>做到 C 以上</b>：可正当叫"多场景私有化抽取产品 + 选型研究"，PM 叙事最完整。</li>
+  </ul>
+  <ul class="cross">
+    <li>绝不手搓 gold；每个新域必须有公开数据集</li>
+    <li>接入新域前先跑 <code>shared/dedup_check.py</code>（CORD 官方 split 有 8% 泄漏的教训）</li>
+    <li>基座与训练格式锁死（Qwen3.5-4B + HF PEFT），中途别换</li>
+  </ul>
+
+  <h2>可用的 toB 公开数据集（都自带 gold）</h2>
+  <table>
+    <tr><th>场景</th><th>数据集</th><th>特点</th><th>就绪度</th></tr>
+    <tr><td>票据</td><td><b>CORD</b>（已用）</td><td>gt_parse 现成嵌套 JSON</td><td>⭐⭐⭐ 最易</td></tr>
+    <tr><td>合同</td><td><b>CUAD</b></td><td>510 合同 / 41 类条款 / 专家标注</td><td>⭐⭐⭐ 最 toB</td></tr>
+    <tr><td>发票</td><td><b>DocILE</b></td><td>6.7k / 55 字段 / 含行项</td><td>⭐⭐ 需申请</td></tr>
+    <tr><td>发票</td><td><b>RealKIE-FCC</b></td><td>11 字段含行项级</td><td>⭐⭐ 申请</td></tr>
+    <tr><td>财报/招股</td><td><b>RealKIE-SEC</b></td><td>24 字段，金融</td><td>⭐⭐ fintech</td></tr>
+    <tr><td>表单</td><td><b>FUNSD / XFUND</b></td><td>key-value，XFUND 含中文</td><td>⭐⭐ 直下</td></tr>
+  </table>
+  <p class="small muted">除 CORD 外多是 span 级标注，需写脚本转 JSON（本身是数据工程加分项）。推荐组合：<b>CORD 票据 + CUAD 合同 + DocILE/RealKIE 发票</b>。</p>
+
+  <div class="box warn">
+    <div class="box-title">🎯 立即下一步</div>
+    <b>Phase A 的 E4</b>：GPT-4o + DeepSeek 在 CORD test 上跑（复用现有评测器，半天出）→ 选型矩阵从 2/5 → 4/5。
+  </div>
+
+  <div class="pager">
+    <a href="index.html"><span>← 上一页</span>总览</a>
+    <a class="next" href="eval_metrics.html">下一页 <span>评测指标 →</span></a>
+  </div>
+
+</div>
+</body>
+</html>

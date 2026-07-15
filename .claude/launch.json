@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "orchestrator-demo",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "python", "scripts/demo_app.py"],
+      "port": 7860
+    }
+  ]
+}

@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>方案③ 从零预训练 · LLM toB Portfolio</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="nav"><div class="nav-inner">
+  <a href="index.html" class="nav-brand">🧩 LLM toB Portfolio</a>
+  <a href="index.html" class="pill">总览</a>
+  <a href="setup.html" class="pill">环境 &amp; 预算</a>
+  <a href="roadmap.html" class="pill">🗺️ 实施路线</a>
+  <a href="project1.html" class="pill">① 结构化抽取</a>
+  <a href="project2.html" class="pill">② Text2SQL</a>
+  <a href="project3.html" class="pill active">③ 从零预训练</a>
+  <a href="project4.html" class="pill">④ 蒸馏+Agent</a>
+  <a href="eval_metrics.html" class="pill">📊 评测指标</a>
+  <a href="qwen35_architecture.html" class="pill">🧠 Qwen3.5架构</a>
+</div></nav>
+
+<div class="wrap">
+
+  <h1>方案③ 从零预训练 0.1–0.3B 中文小模型</h1>
+  <p class="lead">自建 tokenizer → 预训练 → SFT 全流程。这就是简历里的 "full train"，面试稀缺度极高。</p>
+
+  <div class="badges">
+    <span class="badge green">难度 <b>★★★★☆</b></span>
+    <span class="badge blue">成本 <b>$20–40</b></span>
+    <span class="badge purple">算力 <b>GCP A100 spot 必需</b></span>
+    <span class="badge warn">toB 价值 <b>★★☆☆☆</b></span>
+    <span class="badge">工期 <b>7–12 天</b></span>
+  </div>
+
+  <div class="box warn">
+    <div class="box-title">定位说明</div>
+    这个项目<b>直接 toB 业务价值弱</b>，但它证明你「懂底层、能从零造模型」—— 绝大多数候选人只会调 API。
+    建议作为<b>第二旗舰项目</b>，和方案①（toB 应用）一应用一原理搭配，简历叙事最完整。
+  </div>
+
+  <h2>一句话定位</h2>
+  <p>不用任何预训练权重，从随机初始化开始，训练一个约 0.1–0.3B 参数的中文 LLM，让它能进行基础中文对话。参考成熟开源路线即可，不必从头写框架。</p>
+
+  <h2>为什么对求职有说服力</h2>
+  <ul class="check">
+    <li>能讲清 LLM 内部机制：tokenizer、attention、预训练目标、scaling、采样</li>
+    <li>展示完整训练工程：数据清洗、分布式/混合精度、loss 曲线、checkpoint、PPL</li>
+    <li>面试区分度极高：「我从零训过一个能说话的模型」在候选人里非常稀缺</li>
+    <li>可延伸：在自己预训的模型上再做 SFT，形成"全自研"闭环</li>
+  </ul>
+
+  <h2>参考路线（站在巨人肩上，别从零写框架）</h2>
+  <table>
+    <tr><th>项目</th><th>特点</th><th>建议</th></tr>
+    <tr><td><b>MiniMind</b></td><td>中文从零训练小模型，文档极全，几小时可训出可对话模型</td><td>⭐ 首选起点，照着改</td></tr>
+    <tr><td><b>nanoGPT</b></td><td>Karpathy 的极简 GPT 训练，代码量小、最经典</td><td>读懂原理用它</td></tr>
+    <tr><td><b>TinyLlama</b></td><td>1.1B 完整预训练复现，配方公开</td><td>参考数据配比/超参</td></tr>
+  </table>
+
+  <h2>数据来源</h2>
+  <table>
+    <tr><th>数据</th><th>说明</th></tr>
+    <tr><td><b>中文维基百科</b></td><td>高质量、干净，适合小模型预训练主体</td></tr>
+    <tr><td><b>SkyPile / 悟道 子集</b></td><td>大规模中文语料，采样几个 GB 即可（小模型吃不下太多）</td></tr>
+    <tr><td><b>SFT：Alpaca-zh / BELLE</b></td><td>预训练后做指令微调，让模型会对话</td></tr>
+  </table>
+
+  <h2>详细实施步骤</h2>
+  <ol class="steps">
+    <li data-n="1">
+      <span class="phase">Phase 1 · 数据</span>
+      <h4>语料清洗 + 训练 tokenizer</h4>
+      <p>下载中文维基 + 采样 SkyPile，去重、过滤低质。用 <code>sentencepiece</code> / BPE 训练一个词表（如 32k）。这一步本身就是简历亮点：自建 tokenizer。</p>
+<pre><code>pip install sentencepiece tokenizers datasets
+<span class="cmt"># 训练 BPE tokenizer（vocab 32k）→ 把语料 tokenize 成 bin 分片</span></code></pre>
+    </li>
+    <li data-n="2">
+      <span class="phase">Phase 2 · 配置</span>
+      <h4>定模型规模与超参</h4>
+      <p>设定 ~0.2B：如 <code>hidden=768, layers=12–16, heads=12, ctx=1024</code>。参考 MiniMind 配比，确认 token 总量 / 参数量大致符合 Chinchilla 比例。</p>
+    </li>
+    <li data-n="3">
+      <span class="phase">Phase 3 · 验证</span>
+      <h4>Mac/Colab 上小规模 smoke test</h4>
+      <p><b>先用极小数据 + 几百 step 在本地跑通</b>，确认 loss 会下降、能保存/加载 checkpoint。绝不要直接上 GCP 调 bug。</p>
+    </li>
+    <li data-n="4">
+      <span class="phase">Phase 4 · 预训练</span>
+      <h4>GCP A100 正式预训练</h4>
+      <p>开 A100 spot，混合精度（bf16），开梯度累积。这是<b>本作品集唯一必须烧硬算力</b>的一步，预算约 $20–40。</p>
+<pre><code><span class="cmt"># 关键：设自动关机 + 定期存 checkpoint 到 GCS，防 spot 被抢</span>
+<span class="cmt"># 记录 loss / lr / PPL 曲线（wandb 或 tensorboard）</span></code></pre>
+      <p class="small muted">~0.2B 模型在 A100 上几小时～十几小时可训到能成句，足够展示。</p>
+    </li>
+    <li data-n="5">
+      <span class="phase">Phase 5 · SFT</span>
+      <h4>指令微调让它会对话</h4>
+      <p>在预训练 checkpoint 上用 Alpaca-zh / BELLE 做 SFT（可回 Mac MLX 或 Colab 做，省 GCP）。得到能问答的版本。</p>
+    </li>
+    <li data-n="6">
+      <span class="phase">Phase 6 · 交付</span>
+      <h4>评测 + Demo + 文案</h4>
+      <p>报验证集 PPL + 几个对话样例（坦诚展示小模型能力边界，反而显成熟）。Gradio demo + HF 上传模型与 model card。</p>
+    </li>
+  </ol>
+
+  <h2>评测与呈现</h2>
+  <table>
+    <tr><th>指标</th><th>展示什么</th></tr>
+    <tr><td>验证集 PPL（困惑度）</td><td>预训练是否收敛</td></tr>
+    <tr><td>loss / lr 曲线</td><td>训练过程工程能力</td></tr>
+    <tr><td>对话样例</td><td>SFT 后的实际效果（含 limitation 讨论）</td></tr>
+    <tr><td>训练成本 / token 数</td><td>资源意识、scaling 理解</td></tr>
+  </table>
+
+  <h2>环境与依赖</h2>
+<pre><code><span class="cmt"># 参考 MiniMind / nanoGPT requirements</span>
+pip install torch sentencepiece datasets wandb tqdm
+<span class="cmt"># GCP 上确保 CUDA + bf16 支持；本地 Mac 仅做 smoke test</span></code></pre>
+
+  <h2>产出物清单</h2>
+  <ul class="check">
+    <li><code>03-pretrain-mini/</code> repo：tokenizer 训练 + 预训练 + SFT 全流程脚本</li>
+    <li>loss / PPL 曲线图</li>
+    <li>HF 上传：base 模型 + SFT 模型 + 详细 model card</li>
+    <li>一篇博客 / README 讲清"我是怎么从零训出来的"（极佳的主页内容）</li>
+  </ul>
+
+  <h2>简历文案模板</h2>
+  <div class="box">
+    <b>从零预训练</b> 0.2B 参数中文 LLM：自建 32k BPE tokenizer，清洗中文维基 + SkyPile 语料，
+    在 A100 上完成 bf16 混合精度预训练（验证集 PPL <b>X</b>），并用中文指令数据 SFT 得到可对话版本。
+    独立完成数据、tokenizer、预训练、SFT、评测与部署全链路，深入理解 Transformer 内部机制与训练工程。
+  </div>
+
+  <h2>避坑清单</h2>
+  <ul class="cross">
+    <li>别在 GCP 上调 bug —— smoke test 全在本地/Colab 免费做完再上</li>
+    <li>spot 实例会被抢，<b>务必定期存 checkpoint 到 GCS</b></li>
+    <li>别追求"超过 GPT" —— 小模型目标是"能成句、流程完整"，诚实展示边界更显专业</li>
+    <li>数据别贪多，0.2B 模型几个 GB token 足矣，多了也吃不下</li>
+  </ul>
+
+  <div class="pager">
+    <a href="project2.html"><span>← 上一页</span>方案② Text2SQL</a>
+    <a class="next" href="project4.html">下一页 <span>方案④ 蒸馏+Agent →</span></a>
+  </div>
+
+</div>
+</body>
+</html>

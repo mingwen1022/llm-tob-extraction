@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>方案① 结构化抽取 · LLM toB Portfolio</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="nav"><div class="nav-inner">
+  <a href="index.html" class="nav-brand">🧩 LLM toB Portfolio</a>
+  <a href="index.html" class="pill">总览</a>
+  <a href="roadmap.html" class="pill">🗺️ 实施路线</a>
+  <a href="project1.html" class="pill active">① 结构化抽取</a>
+  <a href="eval_metrics.html" class="pill">📊 评测指标</a>
+  <a href="qwen35_architecture.html" class="pill">🧠 Qwen3.5架构</a>
+</div></nav>
+
+<div class="wrap">
+
+  <h1>方案① 合同 / 票据 结构化抽取 → JSON</h1>
+  <p class="lead">把非结构化文本抽成标准 JSON。toB 最高频的付费需求，最适合作为简历主打项目。</p>
+
+  <div class="badges">
+    <span class="badge green">难度 <b>★★☆☆☆</b></span>
+    <span class="badge blue">成本 <b>$0–5</b></span>
+    <span class="badge purple">算力 <b>Mac MLX 即可</b></span>
+    <span class="badge warn">toB 价值 <b>★★★★★</b></span>
+    <span class="badge">工期 <b>4–6 天</b></span>
+  </div>
+
+  <h2>一句话定位</h2>
+  <p>输入一段合同 / 发票 / 简历文本，模型输出固定 schema 的 JSON（如合同的甲乙方、金额、签署日期、违约条款）。配 <b>JSON-Schema 约束解码</b>，保证输出 100% 合法可解析。</p>
+
+  <h2>为什么对 toB 有说服力</h2>
+  <ul class="check">
+    <li>这是企业自动化最高频的需求：财务、法务、HR、供应链都在做文档结构化</li>
+    <li>能展示「<b>可靠性工程</b>」：约束解码保证 JSON 永远合法 —— 这是落地真痛点</li>
+    <li>能算清 ROI：自家小模型 vs 调 GPT-4o 的成本差，直接体现工程价值</li>
+    <li>私有化诉求强：合同/财务数据不能上公有云，正好是小模型私有部署的卖点</li>
+  </ul>
+
+  <h2>技术架构</h2>
+<pre><code>原始文档(PDF/扫描件)
+   │  (可选) OCR / PDF 解析 → 纯文本
+   ▼
+[ Qwen3.5-4B + LoRA 微调模型 ]
+   │  + JSON-Schema 约束解码 (Outlines / XGrammar)
+   ▼
+合法 JSON  ──► 字段级评测 (P/R/F1) ──► 三方对比表
+   └────────► Gradio Demo / FastAPI 服务</code></pre>
+
+  <h2>数据来源</h2>
+  <table>
+    <tr><th>来源</th><th>说明</th><th>用法</th></tr>
+    <tr><td><b>CUAD</b></td><td>510 份商业合同 + 41 类条款标注（公开）</td><td>直接做合同条款抽取的真实数据</td></tr>
+    <tr><td><b>GPT-4o 蒸馏造数</b></td><td>给大模型一批文本 + 目标 schema，让它产出 JSON</td><td>快速造 500–2000 条训练对，成本几美元</td></tr>
+    <tr><td><b>自造发票/简历</b></td><td>用模板 + 随机字段生成合成样本</td><td>补充垂类数据、可控难度</td></tr>
+  </table>
+  <div class="box tip">
+    <div class="box-title">推荐数据策略</div>
+    选一个垂类（建议<b>合同条款</b>，最 toB）。用 <b>CUAD 真实数据 + GPT-4o 造数</b> 混合，目标 1000–1500 条训练 / 200 条验证 / 200 条测试。<b>测试集必须人工校对</b>，否则指标不可信。
+  </div>
+
+  <h2>详细实施步骤</h2>
+  <ol class="steps">
+    <li data-n="1">
+      <span class="phase">Phase 1 · 数据</span>
+      <h4>定义 JSON Schema + 造数据</h4>
+      <p>先用 Pydantic / JSON-Schema 把目标字段定死（如 <code>party_a, party_b, amount, sign_date, term, penalty</code>）。再写 <code>build_data.py</code> 调 GPT-4o 批量造 <code>(合同文本 → JSON)</code> 对，并混入 CUAD。</p>
+<pre><code><span class="cmt"># build_data.py 核心：让大模型按 schema 输出</span>
+SYSTEM = "你是合同信息抽取器，严格按给定 JSON schema 输出，缺失字段填 null。"
+<span class="cmt"># 输出存成 MLX 对话格式 data/train.jsonl</span>
+{"messages":[
+  {"role":"system","content": SYSTEM + SCHEMA_STR},
+  {"role":"user","content": contract_text},
+  {"role":"assistant","content": json.dumps(fields, ensure_ascii=False)}
+]}</code></pre>
+    </li>
+    <li data-n="2">
+      <span class="phase">Phase 2 · 基线</span>
+      <h4>先测基座模型（建立对照）</h4>
+      <p>在 <b>不微调</b>的 Qwen3.5-4B 上跑测试集，记录字段 F1 和 JSON 合法率。这是你后面要超越的对照组，<b>简历对比表的第一列</b>。</p>
+    </li>
+    <li data-n="3">
+      <span class="phase">Phase 3 · 训练</span>
+      <h4>Mac 上 MLX LoRA 微调</h4>
+<pre><code>mlx_lm.lora --model Qwen/Qwen3.5-4B --train \
+    --data ./data --batch-size 4 --iters 1500 \
+    --learning-rate 1e-4 --adapter-path ./adapters
+mlx_lm.fuse --model Qwen/Qwen3.5-4B --adapter-path ./adapters \
+    --save-path ./fused_model</code></pre>
+      <p class="small muted">M1 Max 64G 跑 4B LoRA 完全够；若想要更强可换 8B。Colab 也可用 Unsloth 跑同样数据做对比。</p>
+    </li>
+    <li data-n="4">
+      <span class="phase">Phase 4 · 可靠性</span>
+      <h4>接入 JSON-Schema 约束解码</h4>
+      <p>用 <a href="https://github.com/dottxt-ai/outlines" target="_blank">Outlines</a> 强制模型只能生成符合 schema 的 token，<b>JSON 合法率直接拉到 ~100%</b>。这是本项目最大的工程亮点。</p>
+<pre><code>import outlines
+model = outlines.models.transformers("./fused_model")
+generator = outlines.generate.json(model, ContractSchema)  <span class="cmt"># Pydantic 类</span>
+result = generator(contract_text)   <span class="cmt"># 保证是合法 ContractSchema 实例</span></code></pre>
+    </li>
+    <li data-n="5">
+      <span class="phase">Phase 5 · 评测</span>
+      <h4>字段级评测 + 三方对比</h4>
+      <p>写 <code>eval.py</code>：逐字段算 Precision / Recall / F1（注意做归一化：日期格式、金额单位、大小写）。对比 ① 基座 ② 你的微调模型 ③ GPT-4o。</p>
+    </li>
+    <li data-n="6">
+      <span class="phase">Phase 6 · 交付</span>
+      <h4>Demo + 部署 + 文案</h4>
+      <p>Gradio 做一个「贴文本 → 出 JSON + 高亮字段」的 demo，上传 HF Space。<code>llama.cpp</code> 量化成 GGUF 证明能端侧/私有部署。写 README + 简历 bullet。</p>
+    </li>
+  </ol>
+
+  <h2>评测对比表模板（填进简历）</h2>
+  <table>
+    <tr><th>模型</th><th>字段 F1</th><th>JSON 合法率</th><th>单条延迟</th><th>单条成本</th><th>能否私有化</th></tr>
+    <tr><td>Qwen3.5-4B 基座</td><td>~71%</td><td>~85%</td><td>本地</td><td>$0</td><td>✅</td></tr>
+    <tr><td><b>你的微调 + 约束解码</b></td><td><b>~92%</b></td><td><b>99.6%</b></td><td>本地</td><td>$0</td><td>✅</td></tr>
+    <tr><td>GPT-4o API</td><td>~94%</td><td>~98%</td><td>网络</td><td>$$$</td><td>❌</td></tr>
+  </table>
+  <p class="small muted">数字示意，以你实测为准。卖点：用 4B 小模型逼近 GPT-4o，但成本几乎为 0 且可私有化。</p>
+
+  <h2>环境与依赖</h2>
+<pre><code>pip install mlx-lm outlines datasets pydantic gradio openai
+<span class="cmt"># 基础环境见「环境 & 预算」页</span></code></pre>
+
+  <h2>产出物清单</h2>
+  <ul class="check">
+    <li><code>01-doc-extraction/</code> 完整 repo（造数 / 训练 / 约束推理 / 评测）</li>
+    <li>三方对比表 + loss 曲线 + 字段级误差分析</li>
+    <li>HF Space 在线 demo（贴合同 → 出 JSON）</li>
+    <li>GGUF 量化模型，证明可端侧部署</li>
+  </ul>
+
+  <h2>简历文案模板</h2>
+  <div class="box">
+    基于 <b>Qwen3.5-4B + LoRA</b> 微调合同要素抽取模型，结合 JSON-Schema 约束解码，字段级 F1 由基座
+    <b>71% 提升至 92%</b>，JSON 合法率 <b>99.6%</b>；以 4B 小模型逼近 GPT-4o 效果，单条推理成本
+    <b>↓ ~95%</b> 且支持私有化部署。完成数据合成、训练、评测、量化部署与 Gradio Demo 全流程。
+  </div>
+
+  <h2>避坑清单</h2>
+  <ul class="cross">
+    <li>测试集别用 GPT-4o 造的 —— 会高估指标，<b>必须人工校对</b></li>
+    <li>评测做字段归一化（日期/金额/空白），否则 F1 被格式问题拖低</li>
+    <li>schema 别太大，先 6–10 个核心字段跑通，再扩展</li>
+  </ul>
+
+  <div class="pager">
+  </div>
+
+</div>
+</body>
+</html>

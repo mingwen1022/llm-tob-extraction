@@ -1,0 +1,28 @@
+=== 19:40:45 开始 deepseek-ai/DeepSeek-V4-Pro (max_tokens=4096) ===
+  20/100  (14.65s/条)
+  40/100  (13.08s/条)
+  60/100  (13.29s/条)
+  80/100  (12.81s/条)
+  100/100  (14.24s/条)
+done: 100 条 · 1424.4s · tokens in=15875 out=90802 -> runs/e4_deepseek.jsonl
+（成本 = tokens × 该模型单价，用 in/out token 数自行乘）
+=== 20:04:30 完成 deepseek-ai/DeepSeek-V4-Pro ===
+=== 20:04:30 开始 Qwen/Qwen3.7-Max (max_tokens=4096) ===
+  20/100  (23.67s/条)
+  40/100  (24.52s/条)
+  60/100  (24.68s/条)
+  80/100  (24.92s/条)
+  100/100  (29.48s/条)
+done: 100 条 · 2948.2s · tokens in=18564 out=132075 -> runs/e4_qwenmax.jsonl
+（成本 = tokens × 该模型单价，用 in/out token 数自行乘）
+=== 20:53:39 完成 Qwen/Qwen3.7-Max ===
+=== 20:53:39 开始 moonshotai/Kimi-K2.6 (max_tokens=4096) ===
+  20/100  (0.89s/条)
+  40/100  (0.91s/条)
+  60/100  (0.92s/条)
+  80/100  (0.89s/条)
+  100/100  (0.88s/条)
+done: 100 条 · 88.5s · tokens in=0 out=0 -> runs/e4_kimi.jsonl
+（成本 = tokens × 该模型单价，用 in/out token 数自行乘）
+=== 20:55:08 完成 moonshotai/Kimi-K2.6 ===
+=== 20:55:08 开始 openai/gpt-4o (max_tokens=4096) ===

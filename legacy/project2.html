@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>方案② Text2SQL · LLM toB Portfolio</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="nav"><div class="nav-inner">
+  <a href="index.html" class="nav-brand">🧩 LLM toB Portfolio</a>
+  <a href="index.html" class="pill">总览</a>
+  <a href="setup.html" class="pill">环境 &amp; 预算</a>
+  <a href="roadmap.html" class="pill">🗺️ 实施路线</a>
+  <a href="project1.html" class="pill">① 结构化抽取</a>
+  <a href="project2.html" class="pill active">② Text2SQL</a>
+  <a href="project3.html" class="pill">③ 从零预训练</a>
+  <a href="project4.html" class="pill">④ 蒸馏+Agent</a>
+  <a href="eval_metrics.html" class="pill">📊 评测指标</a>
+  <a href="qwen35_architecture.html" class="pill">🧠 Qwen3.5架构</a>
+</div></nav>
+
+<div class="wrap">
+
+  <h1>方案② Text2SQL（自然语言转 SQL）</h1>
+  <p class="lead">业务人员用大白话查数据库。企业 BI 刚需，且有公开 benchmark 能出客观硬指标。</p>
+
+  <div class="badges">
+    <span class="badge green">难度 <b>★★★☆☆</b></span>
+    <span class="badge blue">成本 <b>$15–30</b></span>
+    <span class="badge purple">算力 <b>GCP L4/A100</b></span>
+    <span class="badge warn">toB 价值 <b>★★★★☆</b></span>
+    <span class="badge">工期 <b>6–9 天</b></span>
+  </div>
+
+  <h2>一句话定位</h2>
+  <p>输入「上个月华东区销售额前十的产品」+ 数据库表结构，模型输出可执行的 SQL。用 <b>execution accuracy</b>（执行结果对不对）而非字符串匹配来评测。</p>
+
+  <h2>为什么对 toB 有说服力</h2>
+  <ul class="check">
+    <li>企业 BI / 数据中台高频需求，几乎每家数据公司都在做</li>
+    <li>有公开榜单（BIRD / Spider），<b>指标客观可信</b>，简历最硬</li>
+    <li>能展示进阶工程：schema-linking、SQL 执行校验、自我纠错重试</li>
+    <li>难度梯度好：从单表查询到多表 JOIN、嵌套子查询，可层层展示能力</li>
+  </ul>
+
+  <h2>技术架构</h2>
+<pre><code>用户问题 + DB Schema
+   │  schema-linking（挑相关表/列，压缩 prompt）
+   ▼
+[ Qwen3-7B/8B + LoRA 微调模型 ]
+   │  生成 SQL
+   ▼
+在真实 DB 上执行 ──失败──► 把报错喂回模型，self-correction 重试
+   │成功
+   ▼
+结果 ──► execution accuracy 评测 ──► 三方对比表</code></pre>
+
+  <h2>数据来源（全公开、有官方评测脚本）</h2>
+  <table>
+    <tr><th>数据集</th><th>说明</th><th>用途</th></tr>
+    <tr><td><b>BIRD</b></td><td>大规模真实数据库，含脏数据，难度高、最贴近企业</td><td>主力训练 + 评测（含金量最高）</td></tr>
+    <tr><td><b>Spider 1.0</b></td><td>跨域 Text2SQL 经典基准</td><td>入门 + 对比基线</td></tr>
+    <tr><td><b>CSpider</b></td><td>Spider 中文版</td><td>做中文 Text2SQL 叙事</td></tr>
+  </table>
+  <div class="box tip">
+    <div class="box-title">建议</div>
+    主攻 <b>BIRD</b>（最能体现企业真实复杂度），用官方 dev set 报 execution accuracy。中文岗位可加做 <b>CSpider</b> 增加差异化。
+  </div>
+
+  <h2>详细实施步骤</h2>
+  <ol class="steps">
+    <li data-n="1">
+      <span class="phase">Phase 1 · 数据</span>
+      <h4>下载 BIRD/Spider，转成训练格式</h4>
+      <p>把 <code>(question, db_schema) → SQL</code> 组织成对话样本。schema 用 <code>CREATE TABLE</code> 文本表示，附带几行样例数据帮助模型理解列含义。</p>
+    </li>
+    <li data-n="2">
+      <span class="phase">Phase 2 · 基线</span>
+      <h4>跑基座 + 大模型基线</h4>
+      <p>记录 Qwen3-8B 基座 与 GPT-4o 在 dev set 的 execution accuracy。作为对照组。</p>
+    </li>
+    <li data-n="3">
+      <span class="phase">Phase 3 · 训练</span>
+      <h4>GCP 上 LoRA 微调 7B/8B</h4>
+      <p>7B/8B 显存较大，用 GCP L4（QLoRA）或 A100。推荐 LLaMA-Factory 配置式启动：</p>
+<pre><code><span class="cmt"># config.yaml 关键字段</span>
+model_name_or_path: Qwen/Qwen3-8B
+finetuning_type: lora
+lora_target: all
+dataset: bird_train
+cutoff_len: 4096
+learning_rate: 1.0e-4
+num_train_epochs: 3
+
+<span class="cmt"># 启动</span>
+llamafactory-cli train config.yaml</code></pre>
+      <p class="small muted">先在 Colab 用 1–2k 子集验证 pipeline 跑通，再上 GCP 跑全量，省额度。</p>
+    </li>
+    <li data-n="4">
+      <span class="phase">Phase 4 · 执行校验</span>
+      <h4>self-correction 重试机制</h4>
+      <p>生成的 SQL 在真实 DB 上执行；若报语法错/超时，把错误信息拼回 prompt 让模型改一次。这一步能显著提分，也是工程亮点。</p>
+    </li>
+    <li data-n="5">
+      <span class="phase">Phase 5 · 评测</span>
+      <h4>execution accuracy（官方脚本）</h4>
+      <p>用 BIRD/Spider 官方 test-suite 评测：比较你的 SQL 执行结果与标准答案结果是否一致，而非比字符串。这是 Text2SQL 的金标准。</p>
+    </li>
+    <li data-n="6">
+      <span class="phase">Phase 6 · 交付</span>
+      <h4>Demo + 文案</h4>
+      <p>Gradio：上传一个 SQLite 示例库 → 用户提问 → 显示生成 SQL + 执行结果表格。最直观的演示。</p>
+    </li>
+  </ol>
+
+  <h2>评测对比表模板</h2>
+  <table>
+    <tr><th>模型</th><th>BIRD dev EX</th><th>多表 JOIN 准确率</th><th>成本</th><th>私有化</th></tr>
+    <tr><td>Qwen3-8B 基座</td><td>~X%</td><td>较低</td><td>本地</td><td>✅</td></tr>
+    <tr><td><b>你的微调 + self-correction</b></td><td><b>~X+Y%</b></td><td>明显提升</td><td>本地</td><td>✅</td></tr>
+    <tr><td>GPT-4o</td><td>~高</td><td>高</td><td>$$$</td><td>❌</td></tr>
+  </table>
+
+  <h2>环境与依赖</h2>
+<pre><code><span class="cmt"># GCP / Colab (CUDA)</span>
+pip install -e "LLaMA-Factory[torch,metrics]"
+<span class="cmt"># 评测 & demo</span>
+pip install sqlparse gradio
+git clone https://github.com/taoyds/test-suite-sql-eval  <span class="cmt"># 官方执行评测</span></code></pre>
+
+  <h2>产出物清单</h2>
+  <ul class="check">
+    <li><code>02-text2sql/</code> repo：训练配置 + 执行校验 + 官方评测脚本封装</li>
+    <li>BIRD/Spider execution accuracy 对比表</li>
+    <li>难度分层错误分析（单表 / JOIN / 嵌套）</li>
+    <li>Gradio demo：自然语言 → SQL → 结果表格</li>
+  </ul>
+
+  <h2>简历文案模板</h2>
+  <div class="box">
+    在 <b>BIRD</b> 基准上微调 <b>Qwen3-8B（LoRA）</b> 构建 Text2SQL 引擎，引入 schema-linking 与
+    SQL 执行 self-correction，execution accuracy 较基座 <b>提升 X 个百分点</b>，多表 JOIN 场景显著改善；
+    以单卡可部署的 8B 模型逼近闭源大模型，支持企业数据私有化查询。
+  </div>
+
+  <h2>避坑清单</h2>
+  <ul class="cross">
+    <li>别用字符串匹配评测 SQL —— 同一查询写法很多，必须用 execution accuracy</li>
+    <li>prompt 里 schema 太长会爆 context，做 schema-linking 裁剪</li>
+    <li>先在 Colab 小样本验证 pipeline，再上 GCP，避免烧额度调 bug</li>
+  </ul>
+
+  <div class="pager">
+    <a href="project1.html"><span>← 上一页</span>方案① 结构化抽取</a>
+    <a class="next" href="project3.html">下一页 <span>方案③ 从零预训练 →</span></a>
+  </div>
+
+</div>
+</body>
+</html>

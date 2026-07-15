@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>三域评测结果 · 结构化抽取</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="nav"><div class="nav-inner">
+  <a href="index.html" class="nav-brand">🧩 LLM toB Portfolio</a>
+  <a href="index.html" class="pill">总览</a>
+  <a href="roadmap.html" class="pill">🗺️ 实施路线</a>
+  <a href="eval_metrics.html" class="pill">📊 评测指标</a>
+  <a href="results.html" class="pill active">📈 评测结果</a>
+  <a href="qwen35_architecture.html" class="pill">🧠 Qwen3.5架构</a>
+  <a href="orchestrator.html" class="pill">⚙️ 产品架构</a>
+  <a href="http://127.0.0.1:7860" target="_blank" class="pill">🚀 产品Demo</a>
+</div></nav>
+
+<div class="wrap">
+
+  <h1>三域评测结果</h1>
+  <p class="lead">三个语言、任务结构、数据来源完全不同的域，用<b>同一套微调配方</b>（Qwen3.5-4B + LoRA r=16/alpha=32）、<b>同一套评测器</b>（<code>shared/eval.py</code>）实测出来的完整数字。CORD 详细的"vs 5个大模型API"选型对比见<a href="index.html">总览页</a>；这里聚焦"微调本身有没有效、能不能推广到多个域、多域组合成 Orchestrator 后精度会不会掉"。</p>
+
+  <div class="badges">
+    <span class="badge green">3 域独立验证</span>
+    <span class="badge blue">微调提升 <b>+0.49~0.54</b>（稳定）</span>
+    <span class="badge purple">3域路由准确率 <b>98.9%</b></span>
+    <span class="badge warn">端到端延迟 <b>~8s/条</b>（Mac未优化）</span>
+  </div>
+
+  <h2>1. 三域 E0→E2 核心结果</h2>
+  <table>
+    <tr><th>域</th><th>语言</th><th>任务</th><th>test条数</th><th>E0 micro-F1</th><th>E2 micro-F1</th><th>E2 schema合法率</th><th>提升</th></tr>
+    <tr><td>CORD</td><td>英文</td><td>字段抽取（小票）</td><td>92（去泄漏）</td><td>0.409</td><td><b>0.945</b></td><td>100%</td><td class="num">+0.536</td></tr>
+    <tr><td>DuEE-fin</td><td>中文</td><td>事件抽取（金融公告）</td><td>227（去泄漏）</td><td>0.322</td><td><b>0.861</b></td><td>99.6%</td><td class="num">+0.539</td></tr>
+    <tr><td>CCKS-fraud</td><td>中文</td><td>案例要素抽取（反欺诈）</td><td>386（零泄漏）</td><td>0.223</td><td><b>0.714</b></td><td>100%</td><td class="num">+0.491</td></tr>
+  </table>
+  <div class="box tip">
+    <div class="box-title">三个域三种完全不同的失败模式，同一配方全部压制</div>
+    CORD 主要错在<b>类型不匹配</b>（金额输出数字非字符串）；DuEE-fin 错在<b>语义幻觉 + 限定语丢失</b>（编日期、丢"不超过"）；
+    CCKS 错在<b>伪值填充</b>（不确定就编"未提及"而非老实吐 null）。三种病因完全不同，但同一套 LoRA 微调配方都能把提升幅度稳定压到 <b>+0.49~0.54</b> 区间——
+    证明微调解决的是"格式与行为对齐"这个通用问题，不是背下了某个数据集的特征。逐样本真实推导见 <a href="eval_metrics.html#11">评测指标 §11</a>。
+  </div>
+
+  <h2>2. 各域细节</h2>
+
+  <h3>2.1 CORD（英文小票）</h3>
+  <p>test 100 条，其中 8 条与官方 train split 存在原文重复（上游数据集自带的泄漏，非本项目转换脚本引入）——对外报告以去泄漏的 92 条干净子集为准。</p>
+  <table>
+    <tr><th>实验</th><th>prompt 内容</th><th>schema合法率</th><th>micro-F1</th></tr>
+    <tr><td>E0 简版</td><td>只给字段名</td><td>26%</td><td>0.390</td></tr>
+    <tr><td>E0 带字段说明</td><td>+ 每字段含义</td><td>21%</td><td>0.466</td></tr>
+    <tr><td>E0 完整版</td><td>+ 字段含义 + 类型要求（值须字符串）</td><td>47%</td><td>0.647</td></tr>
+    <tr><td><b>E2 LoRA</b></td><td>（简版即可，规矩在权重里）</td><td><b>100%</b></td><td><b>0.945</b></td></tr>
+  </table>
+  <p class="small muted">prompt 写到最全（0.647）仍远不及微调（0.945）——给了大模型所有该给的指示，通用能力依然追不上专门微调。</p>
+
+  <h4 style="margin:20px 0 8px;font-size:15px;color:var(--text)">本地 LoRA vs 5 个前沿/国产大模型 API：精度 × 延迟 × 成本</h4>
+  <table>
+    <tr><th>模型</th><th>部署</th><th>micro-F1</th><th>schema合法率</th><th>延迟 s/条</th><th>成本代理（输出tok/文档）</th></tr>
+    <tr style="background:rgba(26,127,55,.06)"><td><b>E2 LoRA(本地4B)</b></td><td>本地</td><td><b>0.945</b></td><td><b>100%</b></td><td>10.12⁺</td><td><b>$0 边际</b></td></tr>
+    <tr><td>Gemini-3.5-Flash</td><td>API</td><td>0.866</td><td>100%</td><td>3.17</td><td>216 tok</td></tr>
+    <tr><td>Qwen3.7-Max</td><td>API</td><td>0.854</td><td>100%</td><td>24.02</td><td>1165 tok</td></tr>
+    <tr><td>Claude-Sonnet-5</td><td>API</td><td>0.850</td><td>100%</td><td>4.92</td><td>273 tok</td></tr>
+    <tr><td>DeepSeek-V4-Pro</td><td>API</td><td>0.838</td><td>100%</td><td>15.60</td><td>762 tok</td></tr>
+    <tr><td>Kimi-K2.6</td><td>API</td><td>0.785</td><td>87%</td><td>273.81</td><td>1346 tok</td></tr>
+    <tr><td>E0 基座·完整prompt</td><td>本地</td><td>0.647</td><td>47%</td><td>2.59</td><td>$0 边际</td></tr>
+  </table>
+  <div class="box warn">
+    <div class="box-title">诚实标注：延迟对比有一个未消融的方法论局限</div>
+    国产模型（DeepSeek/Qwen/Kimi）默认开着"思考模式"，单条探测实测 <b>reasoning_tokens 占比高达 93%</b>——它们的延迟数字主要反映"默认开着思考"，不是纯推理服务速度，
+    这让它们和 Claude/Gemini（未开思考）的延迟对比不完全公平。精度未必受损（正式批跑 schema 合法率仍 100%），但延迟被拉长、且存在截断风险。
+    关闭思考模式重测速度与精度，本轮<b>未执行</b>，留作后续消融实验。
+    <br>本地 4B 延迟为 <code>transformers+peft</code> 在 Mac MPS 上的<b>未优化开发环境</b>数字，生产用 vLLM 部署预期 &lt;1s/条。
+  </div>
+
+  <h3>2.2 DuEE-fin（中文金融公告，事件抽取）</h3>
+  <p>1840条train / 229条test（干净227，去1条泄漏）。schema 带<b>事件列表</b>（一篇公告可能含多个事件，21个候选字段按事件类型选填）。</p>
+  <table>
+    <tr><th>实验</th><th>schema合法率</th><th>micro-F1</th><th>macro-F1</th><th>P</th><th>R</th></tr>
+    <tr><td>E0 基座</td><td>87.7%</td><td>0.322</td><td>0.303</td><td>0.347</td><td>0.300</td></tr>
+    <tr><td><b>E2 LoRA</b></td><td><b>99.6%</b></td><td><b>0.861</b></td><td><b>0.796</b></td><td>0.862</td><td>0.860</td></tr>
+  </table>
+  <p class="small muted">训练：GCE L4 GPU，64分钟/339步。E0 schema合法率已有87.7%（比CORD高很多）——因为 DuEE-fin 原生就是中文短语字段，天然是字符串，没有CORD那种"数字vs字符串"类型冲突。</p>
+
+  <h3>2.3 CCKS-fraud（中文反欺诈案例）</h3>
+  <p>3097条train / 386条test（零泄漏）/ 386条val。schema 纯扁平（同 CORD 结构套路），但文本是社交媒体吐槽体，噪声远高于官方公告/规范小票。</p>
+  <table>
+    <tr><th>实验</th><th>schema合法率</th><th>micro-F1</th><th>macro-F1</th><th>P</th><th>R</th></tr>
+    <tr><td>E0 基座</td><td>99.7%</td><td>0.223</td><td>0.233</td><td>0.180</td><td>0.293</td></tr>
+    <tr><td><b>E2 LoRA</b></td><td><b>100.0%</b></td><td><b>0.714</b></td><td><b>0.637</b></td><td>0.727</td><td>0.701</td></tr>
+  </table>
+  <div class="box">
+    <div class="box-title">诚实标注：为什么 CCKS 绝对分数比其余两域低</div>
+    0.714 vs CORD/DuEE-fin 的 0.86+：(1) 数据本身更噪——社交媒体吐槽体，不像官方公告/标准票据规范；
+    (2) 最差字段"受害人身份"训练样本稀疏（仅 7-8% 文档含此字段），低频字段学习不足是正常表现。
+    这是数据质量差异，不是评测口径不一致——三域用的是完全相同的 <code>shared/eval.py</code>。
+  </div>
+  <p class="small muted">训练：GCE L4 GPU，1小时42分钟/567步。</p>
+
+  <h2>3. Orchestrator 端到端结果（多域组合后精度会不会掉？）</h2>
+  <p>架构：文本 → <b>路由</b>（Qwen3.5-4B 零样本判类，零训练分类器）→ 选对应 adapter+schema → <b>共享基座 + PEFT 多adapter</b>（<code>set_adapter()</code>切换）→ 抽取 → 标准化 JSON。一个基座常驻，多个 LoRA 按需切换——本质与 vLLM <code>--enable-lora</code> 多LoRA服务同一概念。</p>
+
+  <h3>3.1 路由准确率</h3>
+  <table>
+    <tr><th>测试</th><th>n</th><th>准确率</th></tr>
+    <tr><td>2域独立路由测试</td><td>60（每域30）</td><td>100.0%</td></tr>
+    <tr><td>2域端到端评测中的路由</td><td>40（每域20）</td><td>100.0%</td></tr>
+    <tr><td>3域独立路由测试（混合）</td><td>90（每域30）</td><td>98.9%</td></tr>
+    <tr><td>3域端到端评测中的路由</td><td>45（每域15）</td><td>100.0%</td></tr>
+  </table>
+  <p class="small muted">2域→3域，路由准确率几乎无损失（100%→98.9%~100%）——零训练的零样本判类路由器可扩展性得到验证，加新域不用重训分类器。</p>
+
+  <h3>3.2 端到端抽取 F1 vs 单域独立评测</h3>
+  <table>
+    <tr><th>域</th><th>n</th><th>端到端 micro-F1</th><th>端到端 macro-F1</th><th>schema合法率</th><th>对比单域独立 E2</th></tr>
+    <tr><td>cord</td><td>15</td><td>0.951</td><td>0.974</td><td>100%</td><td>0.945</td></tr>
+    <tr><td>duee_fin</td><td>15</td><td>0.906</td><td>0.923</td><td>100%</td><td>0.861</td></tr>
+    <tr><td>ccks_fraud</td><td>15</td><td>0.703</td><td>0.628</td><td>100%</td><td>0.714</td></tr>
+  </table>
+  <div class="box tip">
+    <div class="box-title">端到端 F1 与单域独立评测高度吻合</div>
+    三域同时加载（基座 + 3个 named adapter）之间<b>无权重串扰</b>，路由分发精确——多LoRA架构在3域规模下依然稳固，这是 Orchestrator 产品价值的核心验证：对外只暴露一个统一入口，内部自动路由到正确的领域专家 adapter，精度不打折扣。
+  </div>
+
+  <h3>3.3 延迟拆解（本地 Mac MPS，未优化生产部署）</h3>
+  <table>
+    <tr><th>环节</th><th>2域</th><th>3域</th></tr>
+    <tr><td>路由（零样本判类）</td><td>0.56s</td><td>0.88s</td></tr>
+    <tr><td>抽取（transformers+peft）</td><td>9.51s</td><td>7.05s</td></tr>
+    <tr><td>端到端</td><td>10.07s/条</td><td>~8s/条</td></tr>
+  </table>
+  <p class="small muted">路由开销仅占总延迟 ~10%，可忽略。以上数字均为 Mac 本地开发环境，生产用 vLLM 部署预期 &lt;1s/条。</p>
+
+  <h2>4. 关键工程发现摘录</h2>
+  <ul class="check">
+    <li>路由不用训练分类器——基座零样本判类即可达到 98.9%~100% 准确率，可扩展到更多域</li>
+    <li>PEFT 原生支持多 adapter 同时加载 + <code>set_adapter()</code> 切换，本质与 vLLM <code>--enable-lora</code> 多LoRA服务同一概念</li>
+    <li>Qwen3.5 的 GDN（Gated DeltaNet）层需装 <code>fla</code> + <code>causal-conv1d</code> 加速核，否则慢 15 倍以上</li>
+    <li>248,320 大词表导致长序列 fp32 logits 转换易 OOM，需降 batch/max_seq_len 应对</li>
+    <li>T4（Turing）无法有效训练该模型（bf16 不支持），需换 Ampere+ 架构（L4）</li>
+  </ul>
+  <p class="small muted">完整工程细节见 <code>runs/duee_fin_results.md</code> / <code>runs/ccks_fraud_results.md</code> / <code>runs/orchestrator_results.md</code>。</p>
+
+  <div class="pager">
+    <a href="eval_metrics.html"><span>评测方法论</span>评测指标详解</a>
+    <a class="next" href="http://127.0.0.1:7860" target="_blank">立即体验 <span>产品 Demo →</span></a>
+  </div>
+
+</div>
+</body>
+</html>

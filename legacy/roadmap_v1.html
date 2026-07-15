@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>实施路线图 · 多场景 toB 抽取 Agent</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="nav"><div class="nav-inner">
+  <a href="index.html" class="nav-brand">🧩 LLM toB Portfolio</a>
+  <a href="index.html" class="pill">总览</a>
+  <a href="roadmap.html" class="pill active">🗺️ 实施路线</a>
+  <a href="project1.html" class="pill">① 结构化抽取</a>
+  <a href="eval_metrics.html" class="pill">📊 评测指标</a>
+  <a href="qwen35_architecture.html" class="pill">🧠 Qwen3.5架构</a>
+</div></nav>
+
+<div class="wrap">
+
+  <h1>实施路线图：多场景 toB 结构化抽取 Agent</h1>
+  <p class="lead">一个共享基座 + 多个领域 LoRA 插件 + Orchestrator 路由 → 适用于不同场景的 toB 抽取 Agent。从 CORD 入手，横向复制到 NDA / 发票 / 中文金融。</p>
+
+  <div class="badges">
+    <span class="badge green">基座锁定 <b>Qwen3.5-4B</b></span>
+    <span class="badge blue">训练路线 <b>HF PEFT</b></span>
+    <span class="badge purple">服务 <b>vLLM 多 LoRA 热插拔</b></span>
+    <span class="badge warn">周期 <b>≈ 3–4 周</b></span>
+  </div>
+
+  <h2>目标系统架构</h2>
+<pre><code>                       ┌──────────────────────────────┐
+   输入文档(文本)  ──►  │  Orchestrator / Router        │
+                       │  判断场景 → 选 adapter + schema │
+                       └───────────────┬──────────────┘
+                                       │ (adapter_id, json_schema)
+                                       ▼
+              ┌────────────────────────────────────────────┐
+              │   共享基座 Qwen3.5-4B（常驻显存，权重冻结）       │
+              │   ┌────────┐ ┌────────┐ ┌────────┐          │
+              │   │LoRA小票│ │LoRA NDA│ │LoRA金融│  …热插拔   │
+              │   └────────┘ └────────┘ └────────┘          │
+              └────────────────────────┬───────────────────┘
+                                       │ + 约束解码（按选中 schema）
+                                       ▼
+                                  合法 JSON 输出
+       (后续) OCR / VLM 前置 ──► 文本 ──► 进入以上链路</code></pre>
+  <p><b>核心卖点：</b>vLLM 一个基座常驻 + 多 adapter 热插拔，一张 GPU 服务所有场景。成本对比 = <code>1 基座 + N 个几十 MB adapter</code> vs <code>N 个独立大模型</code> vs <code>按域调 GPT-4o</code> —— toB 决策最爱看的账。</p>
+
+  <h2>两个已锁定的关键决策</h2>
+  <div class="box danger">
+    <div class="box-title">① 基座与版本锁定：Qwen3.5-4B（中途不换）</div>
+    multi-LoRA 路由要求所有 adapter 共享同一个冻结基座；型号/版本/LoRA rank（统一 r=16）全程不变，否则插件互不兼容。
+    选 Qwen3.5-4B（2026.03）的关键原因：<b>原生多模态</b>——Phase 5 的 OCR/图片可复用同一基座做 <code>图片→JSON</code>，无需换模型即可扩展。
+    <div style="margin-top:8px"><b>⚠️ 开工前必做：</b>用几十条数据训一个 tiny LoRA → 最新版 vLLM 加载验证多 LoRA 跑通（4B 为 dense，不受 MoE 的 fused-expert 兼容坑影响），确认后再批量训。vLLM / Unsloth 钉最新版。</div>
+  </div>
+  <div class="box warn">
+    <div class="box-title">② 训练产物格式：HF PEFT（不是 MLX）</div>
+    <b>MLX 格式 adapter 与 vLLM 多 LoRA 加载的 HF PEFT 格式不通用。</b>为支持 orchestrator 热插拔，正式 adapter 一律走 HF PEFT
+    （Colab + Unsloth / GCP + LLaMA-Factory）。分工：
+    <table style="margin-top:10px">
+      <tr><th>角色</th><th>机器</th><th>职责</th></tr>
+      <tr><td>指挥部 / 实验台</td><td>Mac M1 Max</td><td>数据工程、评测、orchestrator 开发、demo（transformers+PEFT on MPS 推理）</td></tr>
+      <tr><td>adapter 工厂</td><td>Colab / GCP</td><td>出 HF 格式 adapter（Unsloth / LLaMA-Factory）</td></tr>
+      <tr><td>服务台</td><td>GCP（CUDA）</td><td>vLLM 多 LoRA 服务端</td></tr>
+    </table>
+  </div>
+
+  <h2>分阶段计划</h2>
+
+  <ol class="steps">
+    <li data-n="0">
+      <span class="phase">Phase 0 · 1–2 天</span>
+      <h4>地基（共享脚手架，不出模型但决定可扩展性）</h4>
+      <ul class="check">
+        <li>定基座 Qwen3.5-4B + 统一 LoRA rank（r=16）</li>
+        <li>统一任务接口：<code>(text, json_schema) → JSON</code></li>
+        <li>统一数据规范：<code>system=任务+schema, user=文本, assistant=JSON</code></li>
+        <li>通用评测器 <code>eval.py</code>：字段级 P/R/F1 + JSON 合法率 + 字段归一化（写一次，四域复用）</li>
+        <li>repo：<code>shared/</code>（评测/转换/router）+ <code>adapters/{cord,nda,invoice,finance}/</code></li>
+      </ul>
+      <p class="small muted">产出：能跑空流程的骨架 + 评测器。</p>
+    </li>
+
+    <li data-n="1">
+      <span class="phase">Phase 1 · 3–5 天 · ⭐ 先做</span>
+      <h4>CORD 垂直切片（端到端打通，作为模板）</h4>
+      <ul class="check">
+        <li>数据：CORD <code>gt_parse</code> → 统一训练格式</li>
+        <li>训练：Qwen3.5-4B + LoRA（Colab/Unsloth，HF 格式）→ adapter #1</li>
+        <li>可靠性：Outlines 按 CORD schema 约束解码</li>
+        <li>评测：基座 / 你的 adapter / GPT-4o 三方对比表</li>
+        <li>demo + 打包</li>
+      </ul>
+      <p class="small muted">里程碑：流水线泛化验证通过 —— 换数据集只需改 schema + 转换脚本。第 1 周结束即有一个可展示子项目。</p>
+    </li>
+
+    <li data-n="2">
+      <span class="phase">Phase 2 · 每域 2–3 天</span>
+      <h4>横向复制到 2–3 个领域（复用 Phase 1 流水线）</h4>
+      <ul class="check">
+        <li>adapter #2：RealKIE <b>NDA</b>（合同，3 字段，最好讲）</li>
+        <li>adapter #3：RealKIE <b>FCC 发票</b>（11 字段，含行项级，难度上一层）</li>
+        <li>adapter #4（中文路线）：<b>CCKS 金融事件要素</b></li>
+        <li>每域独立 schema + 独立 <b>真实人工校对</b> test set</li>
+        <li>每域只需新写「标注 span → JSON」转换脚本</li>
+      </ul>
+      <p class="small muted">关键实验：4 个 adapter 挂同一 Qwen3.5-4B，验证热插拔、互不干扰。产出 4 adapter + 4 对比表。</p>
+    </li>
+
+    <li data-n="3">
+      <span class="phase">Phase 3 · 4–6 天</span>
+      <h4>Orchestrator 路由层（把"四个模型"变成"一个产品"）</h4>
+      <p>路由器三选一（建议先 b 跑通，再升级 a）：</p>
+      <table>
+        <tr><th>方案</th><th>做法</th><th>特点</th></tr>
+        <tr><td>(a) 轻量分类器</td><td>句向量 + 逻辑回归 / 小分类头</td><td>快、可控、好评测</td></tr>
+        <tr><td>(b) 基座零样本</td><td>让 Qwen3.5-4B 自己判断场景</td><td>省事、无需额外训练</td></tr>
+        <tr><td>(c) 元数据/规则</td><td>按文件类型等先验</td><td>有先验时最稳</td></tr>
+      </table>
+      <ul class="check">
+        <li>多 LoRA 服务：vLLM 加载 1 基座 + N adapter，按 <code>adapter_id</code> 路由</li>
+        <li>端到端：<code>文档 → router → (adapter+schema) → 约束解码 → JSON</code></li>
+      </ul>
+      <p class="small muted">产出：可切换场景的统一 API + 端到端 demo。这是简历最大差异化。</p>
+    </li>
+
+    <li data-n="4">
+      <span class="phase">Phase 4 · 2–3 天</span>
+      <h4>系统级评测与封装</h4>
+      <ul class="check">
+        <li>系统指标：路由准确率（混淆矩阵）+ 各域 F1 + 端到端 F1（路由误差会传播，单独测）</li>
+        <li>成本/资源账：1 GPU 多 LoRA vs N 独立模型显存 vs 按域 GPT-4o 的 $/千文档</li>
+        <li>整体 demo（场景切换）、HF 上传、README、简历文案</li>
+      </ul>
+      <p class="small muted">产出：一个完整的多场景 toB 抽取 Agent 作品。</p>
+    </li>
+
+    <li data-n="5">
+      <span class="phase">Phase 5 · Backlog</span>
+      <h4>OCR / 视觉链路（现在只预留接口，后面再做）</h4>
+      <ul class="check">
+        <li>路线 A（解耦）：前置 OCR（PaddleOCR / docTR）→ 出文本 → 进上面链路</li>
+        <li>路线 B（折叠）：<b>复用 Qwen3.5-4B 多模态能力，直接 图片→JSON</b>，同基座、同 multi-LoRA 架构</li>
+        <li>解锁 FUNSD / SROIE 图片、真实扫描 PDF</li>
+      </ul>
+    </li>
+  </ol>
+
+  <h2>实验计划表（每阶段要产出的"数字"）</h2>
+  <table>
+    <tr><th>阶段</th><th>实验</th><th>核心指标</th><th>对照组</th><th>算力</th></tr>
+    <tr><td>P1</td><td>CORD adapter</td><td>字段 F1、JSON 合法率</td><td>基座 / GPT-4o</td><td>Colab 免费</td></tr>
+    <tr><td>P2</td><td>NDA / 发票 / 金融 adapter</td><td>各域字段 F1、合法率</td><td>基座 / GPT-4o</td><td>Colab / GCP L4</td></tr>
+    <tr><td>P2</td><td>多 adapter 共基座</td><td>切换后各域 F1 无衰减</td><td>单独加载</td><td>Mac/Colab</td></tr>
+    <tr><td>P3</td><td>路由器</td><td>路由准确率、混淆矩阵</td><td>随机/规则基线</td><td>Mac</td></tr>
+    <tr><td>P4</td><td>端到端系统</td><td>E2E 字段 F1、延迟</td><td>各域单独最优</td><td>GCP（vLLM）</td></tr>
+    <tr><td>P4</td><td>成本对比</td><td>$/千文档、显存占用</td><td>N 模型 / GPT-4o</td><td>估算</td></tr>
+  </table>
+
+  <h2>关键风险 / 避坑</h2>
+  <ul class="cross">
+    <li><b>基座与格式锁定</b>：Phase 0 定死 Qwen3.5-4B + HF PEFT，中途别换</li>
+    <li><b>MLX↔vLLM 不通用</b>：正式 adapter 走 HF 格式；MLX 仅用于个人快速试错</li>
+    <li><b>路由器是新瓶颈</b>：系统天花板 = 路由准确率 × 各域抽取准确率，Phase 3 单独优化</li>
+    <li><b>schema 漂移</b>：建 <code>schema registry</code>，每域登记 <code>(adapter_id, json_schema, 路由样例)</code></li>
+    <li><b>测试集必须真实</b>：每域人工校对 test set，否则指标不可信</li>
+  </ul>
+
+  <h2>时间线</h2>
+  <p>P0(1–2d) → <b>P1 CORD(3–5d)</b> → P2 三领域(6–9d) → P3 orchestrator(4–6d) → P4 封装(2–3d)，约 <b>3–4 周</b>出完整作品；第 1 周末即有可展示子项目。</p>
+
+  <div class="box tip">
+    <div class="box-title">简历叙事（系统级，比单个微调强一个量级）</div>
+    设计并实现<b>多场景 toB 文档抽取 Agent</b>：以 Qwen3.5-4B 为共享基座，训练 4 个领域 LoRA 插件（小票/合同/发票/金融），
+    通过 Orchestrator 路由 + vLLM 多 LoRA 热插拔实现单卡多场景服务；结合 JSON-Schema 约束解码保证输出合法，
+    端到端字段 F1 <b>X%</b>，相较按域调用 GPT-4o <b>成本 ↓ ~90%</b> 且支持私有化部署。
+  </div>
+
+  <div class="pager">
+    <a class="next" href="project1.html">下一页 <span>方案① 结构化抽取（CORD 入手）→</span></a>
+  </div>
+
+</div>
+</body>
+</html>

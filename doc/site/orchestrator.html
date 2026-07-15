@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Orchestrator 产品架构 · 多场景 toB 结构化抽取</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="nav"><div class="nav-inner">
+  <a href="index.html" class="nav-brand">🧩 LLM toB Portfolio</a>
+  <a href="index.html" class="pill">总览</a>
+  <a href="roadmap.html" class="pill">🗺️ 实施路线</a>
+  <a href="eval_metrics.html" class="pill">📊 评测指标</a>
+  <a href="results.html" class="pill">📈 评测结果</a>
+  <a href="qwen35_architecture.html" class="pill">🧠 Qwen3.5架构</a>
+  <a href="orchestrator.html" class="pill active">⚙️ 产品架构</a>
+  <a href="http://127.0.0.1:7860" target="_blank" class="pill">🚀 产品Demo</a>
+</div></nav>
+
+<div class="wrap">
+
+  <h1>Orchestrator 产品架构：多场景 toB 结构化抽取</h1>
+  <p class="lead"><b>一个入口</b>，贴任意文档文本 → 自动识别文档类型（路由）→ 选对应领域专家 LoRA adapter → 抽取标准化 JSON。调用方不用指定文档类型，也不用维护多套入口。</p>
+
+  <div class="badges">
+    <span class="badge green">1 个共享基座 + 3 个 LoRA adapter</span>
+    <span class="badge blue">路由准确率 <b>98.9%</b></span>
+    <span class="badge purple">Gradio 本地可跑</span>
+    <span class="badge warn">尚未公开部署（见 §4）</span>
+  </div>
+
+  <h2>1. 架构</h2>
+<pre><code>输入文档文本（OCR文本 / 网页正文 / 公告全文）
+   │
+   ▼
+[ 路由：Qwen3.5-4B 零样本判类 ]  ← 零训练分类器，加新域不用重训
+   │  domain ∈ {cord, duee_fin, ccks_fraud}
+   ▼
+[ 选对应 adapter + schema ]
+   │
+   ▼
+[ 共享基座 Qwen3.5-4B（常驻，冻结）+ set_adapter(domain) ]
+   │
+   ▼
+标准化 JSON 输出（按该域 schema 约束）</code></pre>
+  <p class="small muted">本质等价于 vLLM <code>--enable-lora</code> 多LoRA服务——这里用 HF PEFT 原生多 adapter 支持在本地跑通，验证整条链路。完整端到端精度/延迟数字见<a href="results.html">评测结果页 §3</a>。实时可点的界面见<a href="http://127.0.0.1:7860" target="_blank">产品Demo</a>（需本地已启动服务，见 §4）。</p>
+
+  <h2>2. 真实调用走查（非模拟数据，均为 test 集真实样本 + 模型真实输出）</h2>
+
+  <h3>2.1 票据抽取（CORD，英文）</h3>
+<pre><code><span class="cmt"># INPUT（OCR文本，注意原文本身就比较乱，这是真实OCR质量）</span>
+901016 -TICKET CP
+2 60.000 60.000
+TOTAL DISC $ -60.000
+TAX 5.455
+Subtotal 60.000
+TOTAL (Qty 2.00 60.000
+EDC CIMB NIAGA No: xx7730 60.000
+
+<span class="cmt"># 路由结果 → cord</span>
+<span class="cmt"># 抽取输出（E2 真实输出，与 gold 完全一致）</span>
+{"menu": [{"nm": "-TICKET CP", "cnt": "2", "price": "60.000"}],
+ "sub_total": {"subtotal_price": "60.000", "tax_price": "5.455"},
+ "total": {"total_price": "60.000"}}</code></pre>
+
+  <h3>2.2 金融公告事件抽取（DuEE-fin，中文）</h3>
+<pre><code><span class="cmt"># INPUT（节选）</span>
+原标题：宇晶股份(25.050,0.78,3.21%)：持股 7.125%的股东拟减持不超过2%
+宇晶股份晚间公告，持股 7.125%的股东深圳市珠峰基石股权投资合伙企业拟减持不超过200万股，即不超过公司总股本的2%。
+
+<span class="cmt"># 路由结果 → duee_fin</span>
+<span class="cmt"># 抽取输出（E2 真实输出）</span>
+{"events": [{"event_type": "股东减持", "披露时间": "晚间", "股票简称": "宇晶股份",
+             "减持方": "深圳市珠峰基石股权投资合伙企业",
+             "交易股票_股份数量": "不超过200万",
+             "减持部分占总股本比例": "不超过公司总股本的2%"}]}</code></pre>
+  <p class="small muted">诚实标注：最后一个字段 gold 是"不超过2%"，模型输出"不超过公司总股本的2%"——同一件事、措辞不同，字段级精确匹配会判为不命中。这是评测方法本身的已知局限（自由文本字段的表述多样性），详见<a href="eval_metrics.html">评测指标页</a>。</p>
+
+  <h3>2.3 反欺诈案例要素抽取（CCKS，中文）</h3>
+<pre><code><span class="cmt"># INPUT</span>
+@支付宝 我姐昨天在支付宝被盗刷八千!!!申诉也是直接秒拒[微笑][微笑]@蚂蚁金服客户中心
+
+<span class="cmt"># 路由结果 → ccks_fraud</span>
+<span class="cmt"># 抽取输出（E2 真实输出）</span>
+{"event_type": "盗用风险/信息未泄露/其他", "资损金额": "八千",
+ "支付渠道": "支付宝", "受害人身份": "我姐"}</code></pre>
+  <p class="small muted">诚实标注：这条漏了"涉案平台"（gold="蚂蚁金服"）——CCKS 是三域里绝对分数最低的（噪声更大、字段更稀疏），这条真实漏抽正好体现了这一点，没有挑选"完美样本"来展示。</p>
+
+  <h2>3. 为什么用本地 LoRA，而不是直接调大模型 API</h2>
+  <table>
+    <tr><th>方案</th><th>CORD micro-F1</th><th>DuEE-fin micro-F1</th><th>边际成本</th><th>数据出境</th><th>可私有化</th></tr>
+    <tr style="background:rgba(26,127,55,.06)"><td><b>本地 4B LoRA（本demo）</b></td><td><b>0.945</b></td><td><b>0.861</b></td><td><b>$0</b></td><td>否</td><td>✅</td></tr>
+    <tr><td>Gemini-3.5-Flash（前沿API）</td><td>0.866</td><td>—</td><td>按量</td><td>是</td><td>❌</td></tr>
+    <tr><td>Qwen3.7-Max（国产大模型）</td><td>0.854</td><td>—</td><td>按量·思考模式×5</td><td>是</td><td>部分</td></tr>
+    <tr><td>DeepSeek-V4-Pro（国产大模型）</td><td>0.838</td><td>—</td><td>按量·思考模式×5</td><td>是</td><td>部分</td></tr>
+    <tr><td>基座·完整prompt（不微调）</td><td>0.647</td><td>0.322</td><td>$0</td><td>否</td><td>✅</td></tr>
+  </table>
+  <p class="small muted">在数据不能出域的金融/票据场景，微调后的本地小模型在精度、成本、合规三个维度全面胜出——两个语言/任务完全不同的域，微调提升幅度几乎一致（+0.54）。完整选型对比见<a href="index.html">总览页</a>。</p>
+
+  <h2>4. 本地运行 &amp; 部署状态</h2>
+  <p>需要本地跑一个 Ollama 服务（<code>qwen3.5:4b</code>，供路由零样本判类用），再启动 Gradio：</p>
+<pre><code><span class="cmt"># 首次或环境变过：infer + demo 两个 extra 必须一起装（分开装会互相覆盖依赖）</span>
+uv sync --extra infer --extra demo
+
+<span class="cmt"># 启动</span>
+uv run python scripts/demo_app.py
+<span class="cmt"># → 打开 http://127.0.0.1:7860</span></code></pre>
+  <p class="small muted">首次调用会冷加载基座 + 3 个 adapter，约 10-20 秒；之后每次抽取约 8-10 秒/条（Mac MPS，未做生产优化）。</p>
+
+  <div class="box warn">
+    <div class="box-title">当前仅本地运行，尚未公开部署</div>
+    已知阻塞点：路由目前依赖本地 <code>localhost:11434</code> 的 Ollama 服务，云端容器（如 HF Spaces）里不存在——公开部署前需要把路由改成直接复用同一个已加载的 transformers 基座做零样本判类，去掉 Ollama 这个外部依赖。
+    HF Spaces 免费 CPU 档对 4B 模型推理太慢（不到能用的程度），真要公开访问需要 ZeroGPU（免费但有每日GPU时长配额）或付费 GPU（可设闲置自动休眠控制成本）。
+  </div>
+
+  <div class="pager">
+    <a href="results.html"><span>数据支撑</span>评测结果</a>
+    <a class="next" href="http://127.0.0.1:7860" target="_blank">立即体验 <span>产品 Demo →</span></a>
+  </div>
+
+</div>
+</body>
+</html>

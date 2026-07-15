@@ -1,0 +1,10 @@
+=== 19:06:40 开始 deepseek-ai/DeepSeek-V4-Pro ===
+  20/100  (9.19s/条)
+  40/100  (9.34s/条)
+  60/100  (9.02s/条)
+  80/100  (9.41s/条)
+  100/100  (9.96s/条)
+done: 100 条 · 996.4s · tokens in=15875 out=65686 -> runs/e4_deepseek.jsonl
+（成本 = tokens × 该模型单价，用 in/out token 数自行乘）
+=== 19:23:16 完成 deepseek-ai/DeepSeek-V4-Pro ===
+=== 19:23:16 开始 Qwen/Qwen3.7-Max ===

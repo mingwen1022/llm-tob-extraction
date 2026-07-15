@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>环境 & 预算分配 · LLM toB Portfolio</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="nav"><div class="nav-inner">
+  <a href="index.html" class="nav-brand">🧩 LLM toB Portfolio</a>
+  <a href="index.html" class="pill">总览</a>
+  <a href="setup.html" class="pill active">环境 &amp; 预算</a>
+  <a href="roadmap.html" class="pill">🗺️ 实施路线</a>
+  <a href="project1.html" class="pill">① 结构化抽取</a>
+  <a href="project2.html" class="pill">② Text2SQL</a>
+  <a href="project3.html" class="pill">③ 从零预训练</a>
+  <a href="project4.html" class="pill">④ 蒸馏+Agent</a>
+  <a href="eval_metrics.html" class="pill">📊 评测指标</a>
+  <a href="qwen35_architecture.html" class="pill">🧠 Qwen3.5架构</a>
+</div></nav>
+
+<div class="wrap">
+
+  <h1>环境配置 &amp; 算力预算分配</h1>
+  <p class="lead">所有项目共用的基础设施。先把这页配好，4 个项目都能直接开干。</p>
+
+  <h2>一、三套算力怎么分工</h2>
+  <table>
+    <tr><th>算力</th><th>规格</th><th>能干 / 不能干</th><th>典型用途</th></tr>
+    <tr>
+      <td><b>Mac M1 Max</b></td>
+      <td>64G 统一内存<br>Metal GPU</td>
+      <td>✅ 推理飞快、MLX LoRA<br>❌ 无 CUDA，跑不了 Unsloth/bitsandbytes</td>
+      <td>数据处理、≤8B 的 LoRA、评测、demo</td>
+    </tr>
+    <tr>
+      <td><b>Colab</b></td>
+      <td>免费 T4 16G<br>付费 L4/A100</td>
+      <td>✅ CUDA 全生态<br>❌ 免费档会断、显存小</td>
+      <td>Unsloth QLoRA 调试、小样本验证</td>
+    </tr>
+    <tr>
+      <td><b>GCP $100</b></td>
+      <td>L4 24G / A100 40G<br>建议用 spot</td>
+      <td>✅ 真正的训练算力<br>⚠️ 烧钱，要省着用</td>
+      <td>从零预训练、最终 8B 全量"封面跑"</td>
+    </tr>
+  </table>
+
+  <div class="box danger">
+    <div class="box-title">💰 GCP $100 能买多少？（按 spot 价粗估）</div>
+    <ul style="margin:6px 0">
+      <li><b>L4 单卡</b> ≈ $0.20–0.30/h（spot）→ 约 <b>40–60 小时</b></li>
+      <li><b>A100 40G</b> ≈ $1.1–1.5/h（spot）→ 约 <b>12–18 小时</b></li>
+    </ul>
+    原则：<b>调试全在 Mac / Colab 免费做，GCP 只跑"出最终数字"的那一发</b>。每次开机设好自动关机，别忘了停实例。
+  </div>
+
+  <h3>建议预算分配表</h3>
+  <table>
+    <tr><th>项目</th><th>主力算力</th><th>预计 GCP 花费</th></tr>
+    <tr><td>① 结构化抽取</td><td>Mac（MLX）+ Colab 免费</td><td>$0–5</td></tr>
+    <tr><td>④ 蒸馏 + Agent</td><td>Mac（MLX）+ Colab 免费</td><td>$0–5</td></tr>
+    <tr><td>② Text2SQL</td><td>GCP L4/A100</td><td>$15–30</td></tr>
+    <tr><td>③ 从零预训练</td><td>GCP A100 spot</td><td>$20–40</td></tr>
+    <tr><td><b>合计</b></td><td></td><td><b>≈ $40–80（留 $20 缓冲）</b></td></tr>
+  </table>
+
+  <h2>二、Mac 本地环境（MLX 路线）</h2>
+  <p>Apple 官方机器学习框架 <a href="https://github.com/ml-explore/mlx-lm" target="_blank">MLX-LM</a> 是 Mac 上微调/推理的正路，专为统一内存优化。</p>
+<pre><code><span class="cmt"># 建议用 conda / uv 建独立环境（Python 3.11）</span>
+conda create -n llm python=3.11 -y && conda activate llm
+
+<span class="cmt"># Mac 微调 / 推理核心</span>
+pip install mlx-lm
+
+<span class="cmt"># 数据处理 & 评测通用</span>
+pip install datasets pandas tqdm scikit-learn
+pip install outlines        <span class="cmt"># 约束解码 (方案①④)</span>
+pip install openai          <span class="cmt"># 调大模型造数据 (方案①②④)</span>
+
+<span class="cmt"># 本地推理 / 量化部署 / demo</span>
+brew install llama.cpp      <span class="cmt"># GGUF 量化 + 服务化</span>
+pip install gradio          <span class="cmt"># demo 页面</span></code></pre>
+
+  <div class="box tip">
+    <div class="box-title">MLX 三个核心命令（贯穿所有 LoRA 项目）</div>
+<pre style="margin:8px 0"><code><span class="cmt"># 1) LoRA 训练（数据放 ./data/{train,valid}.jsonl）</span>
+mlx_lm.lora --model Qwen/Qwen3-4B --train \
+    --data ./data --batch-size 4 --iters 1000 \
+    --adapter-path ./adapters
+
+<span class="cmt"># 2) 把 LoRA 权重合并进基座，得到完整模型</span>
+mlx_lm.fuse --model Qwen/Qwen3-4B \
+    --adapter-path ./adapters --save-path ./fused_model
+
+<span class="cmt"># 3) 推理验证</span>
+mlx_lm.generate --model ./fused_model --prompt "..." --max-tokens 512</code></pre>
+    MLX 训练数据格式：每行一个 JSON，对话用 <code>{"messages":[{"role":"user",...},{"role":"assistant",...}]}</code>。
+  </div>
+
+  <h2>三、Colab / GCP 环境（CUDA 路线）</h2>
+  <p>需要 QLoRA（省显存）或全量训练时走 CUDA。两套主流工具：</p>
+
+  <h3>Unsloth（最省显存、最快，适合 Colab）</h3>
+<pre><code>pip install unsloth
+<span class="cmt"># 4bit QLoRA，T4 16G 就能跑 7B</span>
+<span class="cmt"># 官方 Colab 模板直接改数据即可，无需手写训练循环</span></code></pre>
+
+  <h3>LLaMA-Factory（功能全、配置式，适合 GCP 正式跑）</h3>
+<pre><code>git clone https://github.com/hiyouga/LLaMA-Factory && cd LLaMA-Factory
+pip install -e ".[torch,metrics]"
+<span class="cmt"># 用 YAML 配置 SFT / LoRA / DPO / 全量预训练，一条命令启动</span>
+llamafactory-cli train config.yaml</code></pre>
+
+  <h2>四、统一的项目仓库结构（建议）</h2>
+  <p>4 个项目放一个 monorepo，README 互相引用，简历给一个 GitHub 链接即可。</p>
+<pre><code>llm-tob-portfolio/
+├── README.md                <span class="cmt"># 总览 + 4 项目导航 + 成绩表</span>
+├── 01-doc-extraction/       <span class="cmt"># 方案①</span>
+│   ├── data/  build_data.py  train.sh  eval.py  demo.py  README.md
+├── 02-text2sql/             <span class="cmt"># 方案②</span>
+├── 03-pretrain-mini/        <span class="cmt"># 方案③</span>
+├── 04-distill-agent/        <span class="cmt"># 方案④</span>
+└── shared/                  <span class="cmt"># 公用：评测、画对比表、造数工具</span></code></pre>
+
+  <h2>五、通用产出物清单（每个项目都要有）</h2>
+  <ul class="check">
+    <li>GitHub repo：可一键复现的训练 + 评测脚本</li>
+    <li>三方对比数字表（基座 / 你的模型 / 大模型 API）</li>
+    <li>Hugging Face 上传 LoRA adapter 或合并模型 + model card</li>
+    <li>在线 demo：Hugging Face Space 或主页内嵌 Gradio</li>
+    <li>一段 200 字项目说明 + 一句简历 bullet（带量化指标）</li>
+  </ul>
+
+  <div class="pager">
+    <a href="index.html"><span>← 上一页</span>总览</a>
+    <a class="next" href="project1.html">下一页 <span>方案① 结构化抽取 →</span></a>
+  </div>
+
+</div>
+</body>
+</html>

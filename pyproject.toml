@@ -1,0 +1,32 @@
+[project]
+name = "llm-tob-extraction"
+version = "0.1.0"
+description = "Multi-scenario toB structured extraction agent (Qwen3.5-4B + LoRA)"
+requires-python = ">=3.10"
+
+# core: data conversion + eval (runs on Mac, light)
+dependencies = [
+    "pydantic>=2.6",
+    "datasets>=2.18",
+    "pandas",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+# heavy ML stack: local inference + constrained decoding (Mac/MPS). `uv sync --extra infer`
+infer = [
+    "transformers>=4.46",
+    "peft>=0.13",
+    "torch",
+    "outlines>=0.1",
+    "accelerate",
+]
+# 前沿/国产大模型 API 对照 (E4)
+baseline = ["openai", "python-dotenv"]
+# local demo
+demo = ["gradio"]
+
+[tool.uv]
+package = false   # this is an application, not a library — don't build/install the root
+
+# NOTE: training (Unsloth) runs on Colab/GCP; vLLM serving runs on GCP (CUDA). Not installed here.

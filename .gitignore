@@ -1,0 +1,15 @@
+# secrets
+.env
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# data / model artifacts (large, regenerable)
+data/
+adapters/*/*.safetensors
+runs/*.jsonl
+
+# os
+.DS_Store

@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Qwen3.5-4B 架构解析 · LLM toB Portfolio</title>
+<link rel="stylesheet" href="style.css">
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, theme: 'default', securityLevel: 'loose' });
+</script>
+<style>
+  .mermaid { background: var(--bg-soft); border:1px solid var(--border); border-radius:10px;
+             padding: 14px; margin: 16px 0; text-align:center; }
+  .lora-yes { color: var(--accent-2); font-weight:600; }
+  .lora-no  { color: var(--text-dim); }
+</style>
+</head>
+<body>
+
+<nav class="nav"><div class="nav-inner">
+  <a href="index.html" class="nav-brand">🧩 LLM toB Portfolio</a>
+  <a href="index.html" class="pill">总览</a>
+  <a href="roadmap.html" class="pill">🗺️ 实施路线</a>
+  <a href="eval_metrics.html" class="pill">📊 评测指标</a>
+  <a href="results.html" class="pill">📈 评测结果</a>
+  <a href="qwen35_architecture.html" class="pill active">🧠 Qwen3.5架构</a>
+  <a href="orchestrator.html" class="pill">⚙️ 产品架构</a>
+  <a href="http://127.0.0.1:7860" target="_blank" class="pill">🚀 产品Demo</a>
+</div></nav>
+
+<div class="wrap">
+
+  <h1>Qwen3.5-4B 架构解析</h1>
+  <p class="lead">面向本项目（CORD 结构化抽取）的架构笔记：每个部位是什么、为什么这么设计、我们在哪儿挂 LoRA。配置来源：<code>Qwen/Qwen3.5-4B/config.json</code>。</p>
+
+  <div class="badges">
+    <span class="badge green">32 层 decoder</span>
+    <span class="badge blue">24 GDN + 8 全注意力</span>
+    <span class="badge purple">原生多模态(VL)</span>
+    <span class="badge warn">Apache 2.0</span>
+  </div>
+
+  <h2>0. 关键配置（4B dense）</h2>
+  <table>
+    <tr><th>项</th><th>值</th><th>说明</th></tr>
+    <tr><td>decoder 层数</td><td><b>32</b></td><td>主干</td></tr>
+    <tr><td>hidden_size</td><td><b>2560</b></td><td>残差流宽度</td></tr>
+    <tr><td>注意力头</td><td><b>16 Q / 4 KV</b></td><td>GQA（KV 头更少，省显存）</td></tr>
+    <tr><td>head_dim</td><td><b>256</b></td><td>16×256=4096 ≠ hidden，单独投影</td></tr>
+    <tr><td>MLP intermediate</td><td><b>9216</b></td><td>SwiGLU 中间维</td></tr>
+    <tr><td>层类型</td><td><b>3×线性 + 1×全注意力 循环</b></td><td><code>full_attention_interval=4</code></td></tr>
+    <tr><td>→ 拆分</td><td><b>24 GDN + 8 full attention</b></td><td>全注意力在第 3,7,…,31 层</td></tr>
+    <tr><td>vocab</td><td><b>248320</b></td><td>超大词表（多语 + 多模态 token）</td></tr>
+    <tr><td>视觉塔</td><td><b>ViT 24 层 / hidden 1024</b></td><td>多模态，文本任务不用</td></tr>
+    <tr><td>许可证</td><td><b>Apache 2.0</b></td><td>可商用/微调/再分发</td></tr>
+  </table>
+
+  <h2>1. 整体架构</h2>
+  <pre class="mermaid">
+flowchart TB
+    T["文本 token"] --> EMB
+    IMG["图片"] --> VIT["ViT 视觉塔 24层"] --> MRG["merger"] --> EMB
+    EMB["Embedding 2560维 / vocab 248320 (冻结)"] --> L0
+    subgraph BACKBONE["32 层 Decoder · 3线性+1全注意力 循环"]
+      L0["Layer 0-2 线性 GDN"] --> L3["Layer 3 全注意力"] --> DOTS["... ×7 组 ..."] --> L31["Layer 31 全注意力"]
+    end
+    L31 --> NORM["final RMSNorm (冻结)"] --> HEAD["LM Head 2560→vocab (冻结)"] --> OUT["下一个 token 概率"]
+  </pre>
+
+  <h3>单层内部（两种层 + 共用 MLP）</h3>
+<pre><code>线性层 ×24 (Gated DeltaNet)            全注意力层 ×8 (Self-Attention)
+┌──────────────────────────┐          ┌──────────────────────────┐
+│ x ─► RMSNorm              │          │ x ─► RMSNorm              │
+│     ► GatedDeltaNet       │          │     ► GQA Attn + RoPE     │
+│        (q/k/v + 门控/衰减) │          │        q_proj k_proj      │
+│     ► + 残差              │          │        v_proj o_proj      │
+│ ─► RMSNorm                │          │     ► + 残差              │
+│     ► MLP(SwiGLU)         │          │ ─► RMSNorm                │
+│        gate/up/down_proj  │          │     ► MLP(SwiGLU)         │
+│     ► + 残差              │          │        gate/up/down_proj  │
+└──────────────────────────┘          └──────────────────────────┘</code></pre>
+
+  <h2>2. 逐部位设计与逻辑</h2>
+
+  <h3>2.1 Tokenizer + Embedding（vocab 248320）</h3>
+  <ul>
+    <li><b>是什么</b>：文本切 token → 查表成 2560 维向量；图片经视觉塔后也映射到同一空间，拼进序列。</li>
+    <li><b>为什么大词表</b>：覆盖 <b>多语言（200+）+ 多模态特殊 token</b>（<code>&lt;image&gt;</code>、<code>&lt;vision_start&gt;</code> 等）。</li>
+    <li><b>对我们</b>：CORD 是英文/数字小票，词表绰绰有余；Embedding 冻结。</li>
+  </ul>
+
+  <h3>2.2 视觉塔 ViT（24 层）+ merger</h3>
+  <ul>
+    <li><b>是什么</b>：标准 ViT，图片切 16×16 patch → 编码 → merger 合并降数量 → 投影成「视觉 token」喂进主干。</li>
+    <li><b>为什么有它</b>：Qwen3.5 原生多模态，图文走同一个 decoder。</li>
+    <li><b>对我们</b>：Phase 1–4 只用文本，<b>视觉塔整块冻结/不加载</b>；Phase 5 做「图片→JSON」时正是复用这块（也是我们选 Qwen3.5 的原因）。</li>
+  </ul>
+
+  <h3>2.3 主干：混合注意力（核心设计）</h3>
+  <p>32 层里 <b>3 线性 + 1 全注意力</b> 循环。这是整个架构最关键的取舍。</p>
+
+  <div class="box">
+    <div class="box-title">a) Gated DeltaNet 层（线性注意力，占 75%）</div>
+    <ul>
+      <li><b>是什么</b>：线性/循环式注意力。不像标准注意力"每个 token 看全部历史"（\(O(n^2)\)），而是维护一个<b>固定大小的状态矩阵</b>，逐 token 用「delta 规则」更新，再加<b>门控</b>控制旧状态衰减/遗忘。</li>
+      <li><b>逻辑</b>：delta 规则 ≈ 在线学习一张"关联记忆表"，新信息修正旧关联；门控 ≈ 记多久、忘多快（类似 LSTM 遗忘门）。</li>
+      <li><b>为什么用</b>：复杂度接近<b>线性</b>，显存/计算不随长度二次爆炸 → 支撑 <b>262K~1M 上下文</b>。</li>
+      <li><b>代价</b>：固定状态容量有限，<b>对"精确回忆远处某细节"较弱</b>。</li>
+    </ul>
+  </div>
+
+  <div class="box tip">
+    <div class="box-title">b) Full Attention 层（全注意力，占 25%）</div>
+    <ul>
+      <li><b>是什么</b>：标准 softmax 自注意力 + <b>GQA</b>（16 Q 头共享 4 组 KV）+ <b>RoPE</b>。</li>
+      <li><b>为什么保留 1/4</b>：能<b>精确检索任意位置</b>，补线性层"记忆模糊"的短板。每 4 层做一次全局精确对齐。</li>
+      <li><b>设计哲学</b>：线性层"高效带着压缩记忆往前走"，全注意力"需要时精确回头查" —— <b>省钱 + 不丢精度</b>的折中。</li>
+    </ul>
+  </div>
+
+  <p class="muted">对我们抽取任务：小票/合同不长，长上下文用不太到；但<b>全注意力层对"从文本精确定位字段值"很重要</b>——这正是抽取需要的能力。</p>
+
+  <h3>2.4 MLP（SwiGLU：gate/up/down_proj）</h3>
+  <ul>
+    <li><b>是什么</b>：注意力之后的前馈网络。SwiGLU = <code>down( SiLU(gate(x)) * up(x) )</code>，两条上投影（gate/up：2560→9216）门控相乘，再下投影（down：9216→2560）。</li>
+    <li><b>逻辑</b>：注意力"token 之间混信息"，MLP"每个 token 内部做非线性变换/存知识"。</li>
+    <li><b>占参数大头</b>：9216 中间维 → 微调调 MLP 收益高。</li>
+  </ul>
+
+  <h3>2.5 RMSNorm + 残差</h3>
+  <p>每个子层前做 RMSNorm（比 LayerNorm 轻），输出加残差；Pre-Norm 结构，稳定训练。冻结不调。</p>
+
+  <h3>2.6 Dense vs MoE</h3>
+  <ul>
+    <li><b>4B 是 dense</b>：每层 MLP 单个 SwiGLU，所有参数都参与。</li>
+    <li><b>大模型（35B/122B/397B）是 MoE</b>：MLP 换成多专家 + 路由，每 token 只激活少数专家。</li>
+    <li><b>对我们</b>：dense 4B 没有路由/专家，结构简单，微调和 vLLM 多 LoRA 都更省心（MoE 才有 fused-expert 兼容坑）。</li>
+  </ul>
+
+  <h3>2.7 LM Head</h3>
+  <p>final RMSNorm → 线性层 2560→vocab，输出每个 token 概率。冻结不调。</p>
+
+  <h2>3. 我们 LoRA 调哪几层</h2>
+  <p>LoRA = 冻结基座，在选定线性层旁挂低秩旁路（A·B，r=16）。按名字匹配。</p>
+  <table>
+    <tr><th>部位</th><th>模块</th><th>在哪些层</th><th>LoRA</th></tr>
+    <tr><td>全注意力</td><td>q_proj / k_proj / v_proj / o_proj</td><td>8 个全注意力层</td><td class="lora-yes">✅</td></tr>
+    <tr><td>MLP</td><td>gate_proj / up_proj / down_proj</td><td><b>全部 32 层</b></td><td class="lora-yes">✅</td></tr>
+    <tr><td>GDN 内部 q/k/v 投影</td><td>（命名依实现而定）</td><td>24 个线性层</td><td>⚠️ 命中则调</td></tr>
+    <tr><td>GDN 门控/衰减/卷积</td><td>b_proj/decay/conv 等</td><td>24 个线性层</td><td class="lora-no">❌ 冻结</td></tr>
+    <tr><td>Embedding / LM Head / RMSNorm</td><td>—</td><td>全局</td><td class="lora-no">❌ 冻结</td></tr>
+    <tr><td>视觉塔 ViT + merger</td><td>—</td><td>视觉</td><td class="lora-no">❌ 冻结</td></tr>
+  </table>
+  <div class="box tip">
+    <div class="box-title">✅ 实测确认（本项目训出的 adapter）</div>
+    解析我们训好的 <code>adapters/cord/</code>：共 <b>128 个 LoRA 模块</b>，覆盖
+    <b>全部 32 层 MLP（gate/up/down）</b> + <b>8 个全注意力层的 q/k/v/o</b>；24 个 GDN 层的内部投影命名不同，<b>未被命中（冻结）</b>。
+    adapter 的 key 形如 <code>...model.language_model.layers.X...</code>（VL 结构，语言主干在 <code>language_model</code> 下）。
+  </div>
+
+  <div class="box warn">
+    <div class="box-title">建议：混合架构上用 <code>all-linear</code> 保证覆盖</div>
+<pre style="margin:8px 0"><code>target_modules = "all-linear"   <span class="cmt"># 命中所有 nn.Linear（含 GDN 投影），只排除 LM head</span></code></pre>
+    这样 24 个 GDN 层不会被漏掉。验证：
+<pre style="margin:8px 0"><code>print({n.split('.')[-1] for n,_ in model.named_modules() if 'proj' in n})  <span class="cmt"># 真实投影名</span>
+model.print_trainable_parameters()                                         <span class="cmt"># 可训练参数占比</span></code></pre>
+  </div>
+
+  <h2>4. 这套架构为什么适合（也限制）我们的任务</h2>
+  <table>
+    <tr><th>特性</th><th>对结构化抽取的意义</th></tr>
+    <tr><td>线性注意力(75%) → 长上下文</td><td>小票/合同不长，<b>优势用不太到</b>；长合同（RealKIE）时有用</td></tr>
+    <tr><td>全注意力(25%) → 精确检索</td><td><b>关键</b>：抽取就是"从文本精确定位字段值"，靠这些层</td></tr>
+    <tr><td>dense 4B</td><td>结构简单，<b>LoRA + vLLM 多 LoRA 最省心</b></td></tr>
+    <tr><td>原生多模态</td><td><b>Phase 5 复用同基座做图片→JSON</b>，不换模型</td></tr>
+    <tr><td>Apache 2.0</td><td>训出的 adapter/模型可放简历/产品，无 license 顾虑</td></tr>
+  </table>
+
+  <h2>5. 参考（含现成架构图）</h2>
+  <ul>
+    <li><a href="https://huggingface.co/blog/mlabonne/qwen35" target="_blank">Qwen3.5: Nobody Agrees on Attention Anymore — Maxime Labonne (HF Blog)</a></li>
+    <li><a href="https://github.com/rasbt/LLMs-from-scratch/blob/main/ch04/08_deltanet/README.md" target="_blank">Gated DeltaNet 教程 — Sebastian Raschka</a></li>
+    <li><a href="https://ai.tekin.cn/en/blog/qwen3-5-hybrid-attention-gated-deltanet-moe-deployment" target="_blank">Qwen3.5 Hybrid Attention 部署解析</a></li>
+    <li><a href="https://laonpeople.com/en/blog/why-did-qwen3-5-choose-gated-deltanet/" target="_blank">Why Did Qwen3.5 Choose Gated DeltaNet?</a></li>
+    <li><a href="https://arxiv.org/html/2604.15804v1" target="_blank">Qwen3.5-Omni Technical Report (arXiv)</a></li>
+  </ul>
+
+  <div class="pager">
+    <a href="eval_metrics.html"><span>← 上一页</span>📊 评测指标</a>
+  </div>
+
+</div>
+</body>
+</html>

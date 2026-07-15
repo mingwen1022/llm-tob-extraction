@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>评测指标详解 · 结构化抽取</title>
+<link rel="stylesheet" href="style.css">
+<script>
+  MathJax = { tex: { inlineMath: [['\\(', '\\)']], displayMath: [['\\[', '\\]']] },
+              svg: { fontCache: 'global' } };
+</script>
+<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<style>
+  mjx-container { color: var(--text); }
+  .formula { background: var(--bg-soft); border:1px solid var(--border); border-radius:8px;
+             padding: 6px 14px; margin: 12px 0; overflow-x:auto; }
+  .metric-h { color: var(--accent); }
+  .num { color: var(--accent-2); font-weight:600; }
+</style>
+</head>
+<body>
+
+<nav class="nav"><div class="nav-inner">
+  <a href="index.html" class="nav-brand">🧩 LLM toB Portfolio</a>
+  <a href="index.html" class="pill">总览</a>
+  <a href="roadmap.html" class="pill">🗺️ 实施路线</a>
+  <a href="eval_metrics.html" class="pill active">📊 评测指标</a>
+  <a href="results.html" class="pill">📈 评测结果</a>
+  <a href="qwen35_architecture.html" class="pill">🧠 Qwen3.5架构</a>
+  <a href="orchestrator.html" class="pill">⚙️ 产品架构</a>
+  <a href="http://127.0.0.1:7860" target="_blank" class="pill">🚀 产品Demo</a>
+</div></nav>
+
+<div class="wrap">
+
+  <h1>结构化抽取评测指标详解</h1>
+  <p class="lead">从 <code>文本 → JSON</code> 任务怎么打分：三层指标、数学定义、各维度逐一展开，全部用 CORD 真实数字（E0 基座 vs E2 LoRA）举例。</p>
+
+  <div class="badges">
+    <span class="badge green">任务：收据 OCR → JSON</span>
+    <span class="badge blue">test 集 100 条</span>
+    <span class="badge purple">评测器：shared/eval.py</span>
+  </div>
+
+  <div class="box tip">
+    <div class="box-title">三层指标，缺一不可</div>
+    <b>① JSON 合法率</b>（能不能读、守不守契约）→ <b>② 字段级 P/R/F1</b>（抽得准不准、全不全）→ <b>③ 聚合</b>（micro / macro / per-field 三个角度）。
+    任何单一数字都会骗人，必须三层一起看。
+  </div>
+
+  <h2>0. 记号约定</h2>
+  <p>对一条样本：金标准 JSON 记为 \(y\)，模型预测 JSON 记为 \(\hat{y}\)。两个核心算子：</p>
+  <ul>
+    <li><b>归一化</b> \(\nu(k, v)\)：把字段 \(k\) 的值 \(v\) 标准化（金额去逗号、日期统一、去空白大小写）。</li>
+    <li><b>拍平</b> \(\Phi(\cdot)\)：把嵌套 JSON 展平成<strong>叶子 \((k,\nu)\) 对的多重集</strong>，并丢弃值为 null 的叶子。</li>
+  </ul>
+  <div class="formula">
+  \[ \Phi(y) \;=\; \big\{\,(k,\ \nu(k,v)) \;:\; (k,v)\ \text{是}\ y\ \text{的叶子},\ v \neq \texttt{null}\,\big\}_{\text{multiset}} \]
+  </div>
+  <p>记 \(G=\Phi(y)\)（gold 多重集）、\(P=\Phi(\hat{y})\)（预测多重集）。<b>列表用叶子字段名当 key、不带下标</b>，所以顺序无关、靠多重集匹配。</p>
+
+  <hr class="soft">
+
+  <h2>1. 第一层：JSON 合法率</h2>
+  <p>模型先得吐出"能用"的东西。分两级，<b>分开报</b>：</p>
+  <table>
+    <tr><th>指标</th><th>含义</th><th>判定</th><th>E0</th><th>E2</th></tr>
+    <tr><td>可解析率 (parseable)</td><td>能否 <code>json.loads</code></td><td>语法合法</td><td>96%</td><td>100%</td></tr>
+    <tr><td>schema 合法率 (valid)</td><td>是否符合字段/类型契约</td><td>Pydantic 校验通过</td><td><span class="num">26%</span></td><td><span class="num">100%</span></td></tr>
+  </table>
+  <div class="formula">
+  \[ \text{合法率} = \frac{1}{N}\sum_{i=1}^{N}\mathbb{1}\big[\hat{y}_i\ \text{解析成功}\ \wedge\ \text{符合 schema}\big] \]
+  </div>
+  <div class="box">
+    E0 可解析 96% 但 schema 仅 26% —— 差距来自<b>基座把金额输出成数字</b>（<code>price: 60</code>）而 schema 要求字符串。
+    E2 微调后 100%：<b>微调本身就教会了格式纪律，约束解码都没用上</b>。
+  </div>
+
+  <hr class="soft">
+
+  <h2>2. 基本单位：(字段, 值) 多重集</h2>
+  <p>字段级评分的原子操作 = 把两个 JSON 各自 <b>拍平 + 归一化</b>，再做多重集比对。用 test 集真实样本 index 3（甜甜圈小票）：</p>
+<pre><code><span class="cmt"># INPUT: 1X @11000 / DONAT GULA 11,000 / SUBTOTAL 11,000 / TOTAL 11,000 / CASH 11,000</span>
+GOLD  Φ(y):                          PRED Φ(ŷ):  (E0 基座输出)
+ (menu.nm,   "donat gula")            (menu.nm,   "@11000")      ← 抓错
+ (menu.cnt,  "1x")                    (menu.cnt,  "1")           ← 丢了 X
+ (menu.price,"11000")                 (menu.price,"11000")       ✓ 归一化后相等
+ (sub_total.subtotal_price,"11000")   (sub_total.subtotal_price,"11000")  ✓
+ (total.total_price,"11000")          (total.total_price,"11000")         ✓
+ (total.cashprice,"11000")            (total.cashprice,"11000")           ✓
+                                      (tax_price/service/change = null → 丢弃)</code></pre>
+  <div class="box tip">
+    <div class="box-title">归一化救分的实例</div>
+    PRED 的 <code>total_price</code> 原始是数字 <code>11000</code>，GOLD 是字符串 <code>"11,000"</code>。
+    经 \(\nu\)（去千分位）两者都 → <code>"11000"</code>，<b>判为命中</b>。没有归一化，这里会白白多 1 FP + 1 FN。
+  </div>
+
+  <hr class="soft">
+
+  <h2>3. TP / FP / FN（多重集运算）</h2>
+  <div class="formula">
+  \[ \mathrm{TP} = |\,G \cap P\,|,\qquad \mathrm{FP} = |\,P \setminus G\,|,\qquad \mathrm{FN} = |\,G \setminus P\,| \]
+  </div>
+  <p>（\(\cap,\setminus\) 为<b>多重集</b>运算，按出现次数计。）上面 index 3 的结果：</p>
+  <table>
+    <tr><th>类别</th><th>(字段, 值)</th><th>计数</th></tr>
+    <tr><td class="metric-h">TP 命中</td><td>menu.price、subtotal_price、total_price、cashprice</td><td><span class="num">4</span></td></tr>
+    <tr><td class="metric-h">FP 误报</td><td>(menu.nm,"@11000")、(menu.cnt,"1")</td><td><span class="num">2</span></td></tr>
+    <tr><td class="metric-h">FN 漏报</td><td>(menu.nm,"donat gula")、(menu.cnt,"1x")</td><td><span class="num">2</span></td></tr>
+  </table>
+
+  <h3>TP/FP/FN 不是成对的</h3>
+  <p>很多人以为错一个字段必然同时进 FP 和 FN —— <b>只有"值替换错"才成对</b>。三种情况：</p>
+  <table>
+    <tr><th>情况</th><th>例子</th><th>FP</th><th>FN</th></tr>
+    <tr><td>值替换错（同字段，值不同）</td><td>gold <code>nm=DONAT</code> vs pred <code>nm=@11000</code></td><td>✅</td><td>✅</td></tr>
+    <tr><td>纯漏抽（pred 少给/漏列表项）</td><td>模型少抽一个菜品</td><td>❌</td><td>✅</td></tr>
+    <tr><td>纯多抽（pred 幻觉多余值）</td><td>模型编一个 subtotal</td><td>✅</td><td>❌</td></tr>
+  </table>
+  <div class="box">
+    <b>铁证</b>：E0 里字段 <code>menu.nm</code> 的 \(\mathrm{FP}=48,\ \mathrm{FN}=137\) —— 不相等，证明大量"纯漏抽"（模型少抽/抽串菜品，gold 的名字没有错值顶上）。
+    同一字段同一条里甚至能 TP/FP/FN 三者并存：gold 价 \(\{100,200\}\) vs pred \(\{100,999\}\) → 100 是 TP、999 是 FP、200 是 FN。
+  </div>
+
+  <hr class="soft">
+
+  <h2>4. Precision / Recall / F1</h2>
+  <div class="formula">
+  \[ P=\frac{\mathrm{TP}}{\mathrm{TP}+\mathrm{FP}},\qquad
+     R=\frac{\mathrm{TP}}{\mathrm{TP}+\mathrm{FN}},\qquad
+     F_1=\frac{2PR}{P+R}=\frac{2\,\mathrm{TP}}{2\,\mathrm{TP}+\mathrm{FP}+\mathrm{FN}} \]
+  </div>
+  <ul>
+    <li><b>Precision（精确率）</b>：你抽出来的，有多少是对的 → 低 = <b>多抽 / 抽错 / 幻觉</b>。</li>
+    <li><b>Recall（召回率）</b>：该抽的，抽到了多少 → 低 = <b>漏抽 / 少抽</b>。</li>
+    <li><b>\(F_1\)</b>：P 与 R 的<b>调和平均</b>，只要一个低就被拉下去（比算术平均更严）。</li>
+  </ul>
+  <p>index 3（\(\mathrm{TP}=4,\mathrm{FP}=2,\mathrm{FN}=2\)）：</p>
+  <div class="formula">
+  \[ P=\tfrac{4}{4+2}=0.667,\quad R=\tfrac{4}{4+2}=0.667,\quad F_1=0.667 \]
+  </div>
+  <p class="small muted">广义 \(F_\beta=(1+\beta^2)\dfrac{PR}{\beta^2P+R}\)；\(\beta>1\) 偏重 recall，\(\beta<1\) 偏重 precision。抽取一般用 \(\beta=1\)。</p>
+
+  <hr class="soft">
+
+  <h2>5. per-field：单字段自己的分</h2>
+  <p>对每个字段 \(f\)，只用该字段（跨全部 100 条累计）的 \(\mathrm{TP}_f,\mathrm{FP}_f,\mathrm{FN}_f\) 算它自己的 P/R/F1。</p>
+  <div class="formula">
+  \[ \mathrm{TP}_f=\sum_{i=1}^{N}\big|\{(k,v)\in G_i\cap P_i : k=f\}\big|,\quad
+     F_1^{(f)}=\frac{2\,\mathrm{TP}_f}{2\,\mathrm{TP}_f+\mathrm{FP}_f+\mathrm{FN}_f} \]
+  </div>
+  <p>E0 的 <code>menu.nm</code>（\(\mathrm{TP}=114,\mathrm{FP}=48,\mathrm{FN}=137\)）：</p>
+  <div class="formula">
+  \[ P=\tfrac{114}{162}=0.704,\quad R=\tfrac{114}{251}=0.454,\quad F_1=0.552 \]
+  </div>
+  <p><b>用途</b>：定位短板。下表 E0 vs E2 各字段 F1：</p>
+  <table>
+    <tr><th>字段</th><th>E0 F1</th><th>E2 F1</th></tr>
+    <tr><td>menu.nm</td><td>0.552</td><td>0.876</td></tr>
+    <tr><td>menu.cnt</td><td>0.557</td><td>0.973</td></tr>
+    <tr><td>menu.price</td><td>0.291</td><td>0.980</td></tr>
+    <tr><td>sub_total.subtotal_price</td><td>0.324</td><td>0.970</td></tr>
+    <tr><td>sub_total.tax_price</td><td>0.277</td><td>0.989</td></tr>
+    <tr><td>total.total_price</td><td>0.373</td><td>0.974</td></tr>
+    <tr><td>total.cashprice</td><td>0.331</td><td>0.938</td></tr>
+    <tr><td>total.changeprice</td><td>0.416</td><td>0.982</td></tr>
+  </table>
+
+  <hr class="soft">
+
+  <h2>6. micro-F1：所有字段倒进一个大池子</h2>
+  <p>不分字段，把全语料所有 \(\mathrm{TP}/\mathrm{FP}/\mathrm{FN}\) 加总后算<b>一次</b>。</p>
+  <div class="formula">
+  \[ \mathrm{TP}=\sum_{f}\mathrm{TP}_f,\quad \text{micro-}P=\frac{\mathrm{TP}}{\mathrm{TP}+\mathrm{FP}},\quad
+     \text{micro-}F_1=\frac{2\,\mathrm{TP}}{2\,\mathrm{TP}+\mathrm{FP}+\mathrm{FN}} \]
+  </div>
+  <p>E0 全 test 集：\(\mathrm{TP}=377,\ \mathrm{FP}=413,\ \mathrm{FN}=678\)：</p>
+  <div class="formula">
+  \[ \text{micro-}P=\tfrac{377}{790}=0.477,\quad \text{micro-}R=\tfrac{377}{1055}=0.357,\quad
+     \text{micro-}F_1=\tfrac{2\cdot377}{2\cdot377+413+678}=0.409 \]
+  </div>
+  <p><b>特点</b>：每个<b>字段实例</b>权重相等 → 高频字段（menu.* 几百实例）主导。代表"整体抽对了多少个值"。</p>
+
+  <hr class="soft">
+
+  <h2>7. macro-F1：各字段 F1 的平均</h2>
+  <div class="formula">
+  \[ \text{macro-}F_1=\frac{1}{|\mathcal{F}|}\sum_{f\in\mathcal{F}}F_1^{(f)} \]
+  </div>
+  <p>E0 共出现 \(|\mathcal{F}|=15\) 个字段（含 6 个 F1=0 的"幻影字段"，是基座把结构嵌套错位造出来的）：</p>
+  <div class="formula">
+  \[ \text{macro-}F_1=\frac{0.557+0.552+0.291+0.381+0.324+0.277+0.331+0.416+0.373+6\times0}{15}=\frac{3.501}{15}=0.233 \]
+  </div>
+  <p><b>特点</b>：每个<b>字段</b>权重相等（不管它出现 200 次还是 4 次）。小字段、幻影字段都平等计入 → 比 micro 更能暴露"个别字段很烂"。</p>
+
+  <hr class="soft">
+
+  <h2>8. micro vs macro：什么时候看哪个</h2>
+  <table>
+    <tr><th></th><th>算法</th><th>谁主导</th><th>考试类比</th></tr>
+    <tr><td><b>micro</b></td><td>所有 TP/FP/FN 合并算一次</td><td>高频字段</td><td>全班所有题汇总算总正确率（答题多的人影响大）</td></tr>
+    <tr><td><b>macro</b></td><td>各字段 F1 先算再平均</td><td>每字段一票</td><td>每人先算自己分，再人均（每人一票）</td></tr>
+    <tr><td><b>per-field</b></td><td>单字段自算</td><td>—</td><td>看每章单独考多少</td></tr>
+  </table>
+  <div class="box">
+    <b>E0 为何 micro(0.41) &gt; macro(0.23)</b>：大字段 menu.nm/cnt（量大、F1≈0.55）把 micro 抬高；macro 里一堆小字段 + 0 分幻影字段平等参与，把平均拉低 → <b>"整体还行，但部分字段很差且不均衡"</b>。
+    <br>E2 微调后 <b>micro(0.950)≈macro(0.955)</b> → 幻影字段消失、各字段都好，<b>变均衡了</b>。
+  </div>
+
+  <hr class="soft">
+
+  <h2>9. 各维度总表（含 E0/E2 实测）</h2>
+  <table>
+    <tr><th>维度</th><th>公式</th><th>反映</th><th>E0</th><th>E2</th></tr>
+    <tr><td>可解析率</td><td>\(\frac1N\sum \mathbb{1}[\text{可}\ \texttt{json.loads}]\)</td><td>语法合法</td><td>96%</td><td>100%</td></tr>
+    <tr><td>schema 合法率</td><td>\(\frac1N\sum \mathbb{1}[\text{符合契约}]\)</td><td>类型/结构纪律</td><td>26%</td><td>100%</td></tr>
+    <tr><td>micro-P</td><td>\(\mathrm{TP}/(\mathrm{TP}+\mathrm{FP})\)</td><td>抽的准不准（多抽/幻觉）</td><td>0.477</td><td>0.949</td></tr>
+    <tr><td>micro-R</td><td>\(\mathrm{TP}/(\mathrm{TP}+\mathrm{FN})\)</td><td>抽的全不全（漏抽）</td><td>0.357</td><td>0.951</td></tr>
+    <tr><td>micro-F1</td><td>\(2\mathrm{TP}/(2\mathrm{TP}+\mathrm{FP}+\mathrm{FN})\)</td><td>整体（频次加权）</td><td><span class="num">0.409</span></td><td><span class="num">0.950</span></td></tr>
+    <tr><td>macro-F1</td><td>\(\frac1{|\mathcal F|}\sum_f F_1^{(f)}\)</td><td>字段均衡性</td><td>0.233</td><td>0.955</td></tr>
+    <tr><td>per-field F1</td><td>\(F_1\) on \((\mathrm{TP}_f,\mathrm{FP}_f,\mathrm{FN}_f)\)</td><td>定位短板</td><td>见 §5</td><td>见 §5</td></tr>
+  </table>
+
+  <hr class="soft">
+
+  <h2>10. 实战读数：E0 → E2 这组数字在讲什么</h2>
+  <table>
+    <tr><th>实验</th><th>schema合法</th><th>micro-F1</th><th>macro-F1</th><th>P</th><th>R</th><th>TP/FP/FN</th></tr>
+    <tr><td>E0 基座·自由</td><td>26%</td><td>0.409</td><td>0.233</td><td>0.477</td><td>0.357</td><td>377 / 413 / 678</td></tr>
+    <tr><td><b>E2 LoRA·自由</b></td><td><b>100%</b></td><td><b>0.950</b></td><td><b>0.955</b></td><td>0.949</td><td>0.951</td><td>1003 / 54 / 52</td></tr>
+  </table>
+  <ul class="check">
+    <li><b>格式纪律</b>：schema 合法率 26%→100%（数字→字符串，结构归位）</li>
+    <li><b>补漏</b>：Recall 0.357→0.951，FN 678→52（漏抽几乎消除）</li>
+    <li><b>降噪</b>：FP 413→54（幻觉/抽错大减）</li>
+    <li><b>均衡</b>：macro 0.233→0.955，字段数 15→9（幻影字段消失）</li>
+    <li><b>一句话</b>：基座"会说 JSON 但不守契约、还漏" → LoRA 教会"守格式 + 抽全 + 抽准"</li>
+  </ul>
+  <div class="box tip">
+    <div class="box-title">简历该报哪个</div>
+    头条：<b>micro-F1 0.41 → 0.95</b> + <b>schema 合法率 26% → 100%</b>（三方表里再加 GPT-4o 一列）。
+    加分：per-field 误差分析 + P/R 拆解（证明你懂模型错在哪，不是只会看一个总分）。
+  </div>
+
+  <hr class="soft">
+
+  <h2>11. 扩展到多域：同一套 Φ/TP-FP-FN 逻辑，换个 schema 直接套用</h2>
+  <p>上面 §1-10 全部用 CORD 举例（英文小票、扁平嵌套 schema）。Phase C 又做了两个中文域——<b>DuEE-fin</b>（金融公告，schema 带<b>事件列表</b>）和 <b>CCKS-fraud</b>（反欺诈案例，<b>纯扁平</b> schema）。
+  评测器 <code>shared/eval.py</code> 代码<b>一行没改</b>，因为 §0 的拍平算子 \(\Phi\) 天然处理嵌套/列表/扁平——这正是"schema 注册制"设计的意义。下面两个例子都是 test 集<b>真实样本</b>、模型<b>真实输出</b>（<code>runs/duee_e0.jsonl</code> / <code>runs/duee_e2.jsonl</code> / <code>runs/ccks_e0.jsonl</code> / <code>runs/ccks_e2.jsonl</code>），TP/FP/FN 用 <code>shared/eval.py</code> 的 <code>flatten()</code> 现算，不是手工编的。</p>
+
+  <h3>11.1 DuEE-fin：事件列表怎么拍平</h3>
+  <p>DuEE-fin 的 schema 是 <code>{events:[{event_type, 披露时间, ...21字段}]}</code> —— 列表套对象，比 CORD 的 <code>menu:[{nm,cnt,price}]</code> 字段更多、缺失更常见（21 字段里一个事件通常只填 5-7 个，其余 null 被 \(\Phi\) 丢弃）。test 集样本：</p>
+<pre><code><span class="cmt"># INPUT（节选）</span>
+原标题：宇晶股份(25.050,0.78,3.21%)：持股 7.125%的股东拟减持不超过2%
+宇晶股份晚间公告，持股 7.125%的股东深圳市珠峰基石股权投资合伙企业拟减持不超过200万股，即不超过公司总股本的2%。
+
+<span class="cmt"># GOLD</span>
+{"events": [{"event_type": "股东减持", "披露时间": "晚间", "股票简称": "宇晶股份",
+             "减持方": "深圳市珠峰基石股权投资合伙企业",
+             "交易股票_股份数量": "不超过200万", "减持部分占总股本比例": "不超过2%"}]}</code></pre>
+
+  <table>
+    <tr><th></th><th>E0 基座真实输出</th><th>E2 LoRA真实输出</th></tr>
+    <tr><td>披露时间</td><td class="num">"2023-10-25"　✗ 幻觉日期（原文没有具体日期，基座编了一个）</td><td>"晚间"　✓</td></tr>
+    <tr><td>交易股票_股份数量</td><td>"200 万股"　✗ 漏了"不超过"</td><td>"不超过200万"　✓</td></tr>
+    <tr><td>减持部分占总股本比例</td><td>"2%"　✗ 漏了"不超过"</td><td>"不超过公司总股本的2%"　✗ 措辞变了，规范化后仍≠"不超过2%"</td></tr>
+    <tr><td>（多输出）减持部分占所持比例</td><td>"2%"　✗ FP（gold该字段没值，21选字段里选错了）</td><td>— 未输出，正确</td></tr>
+  </table>
+  <p>拍平后（\(\Phi\) 真实输出）核对，gold 共 6 条：</p>
+  <table>
+    <tr><th></th><th>拍平条数</th><th>TP</th><th>FP</th><th>FN</th></tr>
+    <tr><td>E0 基座</td><td>7 条</td><td>3</td><td>4</td><td>3</td></tr>
+    <tr><td>E2 LoRA</td><td>6 条</td><td>5</td><td>1</td><td>1</td></tr>
+  </table>
+  <p>代入 §4 的 \(P,R,F_1\) 公式：</p>
+  <div class="formula">
+  \[ P^{E0}=\frac{3}{3+4}=0.429,\quad R^{E0}=\frac{3}{3+3}=0.500,\quad F_1^{E0}=\frac{2\times3}{2\times3+4+3}=\frac{6}{13}=0.462 \]
+  \[ P^{E2}=\frac{5}{5+1}=0.833,\quad R^{E2}=\frac{5}{5+1}=0.833,\quad F_1^{E2}=\frac{2\times5}{2\times5+1+1}=\frac{10}{12}=0.833 \]
+  </div>
+  <div class="box tip">
+    <div class="box-title">这条样本暴露的失败模式，跟 CORD 不一样</div>
+    CORD 的 E0 主要错在<b>类型</b>（数字 vs 字符串）；这里 E0 错在<b>语义幻觉</b>——原文没写具体日期却编一个"2023-10-25"，
+    "不超过"这种限定语被静默丢弃。这类错误<b>类型合法率测不出来</b>（"2023-10-25"是完全合法的字符串），
+    只有<b>字段级值比对</b>才能抓到——这是三层指标里"② 字段级 P/R/F1"存在的意义，不能只看 §1 的合法率。
+  </div>
+
+  <h3>11.2 CCKS-fraud：扁平 schema + "幻觉占位符"的 FP 陷阱</h3>
+  <p>CCKS schema 是纯扁平（同 CORD 结构套路），但文本是社交媒体吐槽体，比公告/小票噪声大得多：</p>
+<pre><code><span class="cmt"># INPUT</span>
+@支付宝 我姐昨天在支付宝被盗刷八千!!!申诉也是直接秒拒[微笑][微笑]@蚂蚁金服客户中心
+
+<span class="cmt"># GOLD</span>
+{"event_type": "盗用风险/信息未泄露/其他", "资损金额": "八千", "支付渠道": "支付宝",
+ "涉案平台": "蚂蚁金服", "受害人身份": "我姐"}
+
+<span class="cmt"># E0 基座真实输出</span>
+{"event_type": "盗用风险", "资损金额": "8000", "支付渠道": "支付宝",
+ "受害人": "未提及", "嫌疑人": "未提及", "案发时间": "昨天", "案发城市": "未提及",
+ "涉案平台": "支付宝", "受害人身份": "未提及"}
+
+<span class="cmt"># E2 LoRA真实输出</span>
+{"event_type": "盗用风险/信息未泄露/其他", "资损金额": "八千", "支付渠道": "支付宝",
+ "受害人身份": "我姐"}</code></pre>
+  <p>拍平后（\(\Phi\) 真实输出）核对，gold 共 5 条：</p>
+  <table>
+    <tr><th></th><th>拍平条数</th><th>TP</th><th>FP</th><th>FN</th></tr>
+    <tr><td>E0 基座</td><td>9 条</td><td>1</td><td>8</td><td>4</td></tr>
+    <tr><td>E2 LoRA</td><td>4 条</td><td>4</td><td>0</td><td>1</td></tr>
+  </table>
+  <p>代入 §4 的 \(P,R,F_1\) 公式：</p>
+  <div class="formula">
+  \[ P^{E0}=\frac{1}{1+8}=0.111,\quad R^{E0}=\frac{1}{1+4}=0.200,\quad F_1^{E0}=\frac{2\times1}{2\times1+8+4}=\frac{2}{14}=0.143 \]
+  \[ P^{E2}=\frac{4}{4+0}=1.000,\quad R^{E2}=\frac{4}{4+1}=0.800,\quad F_1^{E2}=\frac{2\times4}{2\times4+0+1}=\frac{8}{9}=0.889 \]
+  </div>
+  <div class="box tip">
+    <div class="box-title">第三种失败模式：不确定就编"未提及"，而不是老实吐 null</div>
+    E0 把 <code>受害人/嫌疑人/案发城市</code> 三个 schema 里<b>本该判 null</b> 的字段全填成字符串 <code>"未提及"</code>——
+    这是合法值（不违反 schema），但 \(\Phi\) 只丢弃<b>真正的 null</b>，"未提及"这种<b>伪值</b>会被当成正常叶子，白白贡献 3 个 FP。
+    另外 <code>资损金额</code> gold="八千"、pred="8000"——中文数字与阿拉伯数字不在 <code>shared/normalize.py</code> 的归一化范围内，判为不命中（这是当前归一化规则一个诚实的已知局限，未来可扩展）。
+    <br>三个域三种典型错误——<b>CORD:类型不匹配 / DuEE-fin:语义幻觉+限定语丢失 / CCKS:伪值填充</b>——但 LoRA 后全部被压制，说明微调学到的不是"背答案"，是"老实按 schema 契约输出"这个通用行为。
+  </div>
+
+  <h2>12. 三域全景：把 micro-F1 放在一起看</h2>
+  <table>
+    <tr><th>域</th><th>语言</th><th>任务</th><th>E0 micro-F1</th><th>E2 micro-F1</th><th>提升</th></tr>
+    <tr><td>CORD</td><td>英文</td><td>字段抽取（小票）</td><td>0.409</td><td><b>0.945</b></td><td class="num">+0.536</td></tr>
+    <tr><td>DuEE-fin</td><td>中文</td><td>事件抽取（金融公告）</td><td>0.322</td><td><b>0.861</b></td><td class="num">+0.539</td></tr>
+    <tr><td>CCKS-fraud</td><td>中文</td><td>案例要素抽取（反欺诈）</td><td>0.223</td><td><b>0.714</b></td><td class="num">+0.491</td></tr>
+  </table>
+  <p class="small muted">CCKS 绝对分数偏低（0.714 vs 其余两域 0.86+）：数据本身更噪（社交媒体吐槽体，非官方规范文本），且"受害人身份"字段训练样本稀疏（仅 7-8% 文档含此字段）——这是数据质量差异，不是评测口径不一致，三域用的是<b>完全相同</b>的 <code>shared/eval.py</code>。</p>
+  <div class="box">
+    <b>三个语言/文档结构/失败模式完全不同的域，提升幅度稳定在 +0.49~0.54</b> —— 不是 CORD 一个数据集的偶然，是"微调解决格式与行为对齐问题"这个规律的可复现证据。
+  </div>
+
+  <hr class="soft">
+
+  <h2>附录：三条保证指标"真实"的规则</h2>
+  <ul class="check">
+    <li><b>归一化 \(\nu\)</b>：金额去千分位/货币符号、日期统一 ISO、去空白、大小写、全半角 → 否则格式差异被误判为错。</li>
+    <li><b>空值约定</b>：值为 null/空 的叶子在 \(\Phi\) 中丢弃（不计入分母），否则一堆空字段刷虚高。</li>
+    <li><b>列表多重集、不带下标</b>：菜品顺序不影响打分（按 \((k,v)\) 多重集匹配）。</li>
+  </ul>
+
+  <div class="pager">
+    <a class="next" href="roadmap.html">实施路线 <span>多场景抽取 Agent →</span></a>
+  </div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>方案④ 蒸馏 + Agent 工具调用 · LLM toB Portfolio</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="nav"><div class="nav-inner">
+  <a href="index.html" class="nav-brand">🧩 LLM toB Portfolio</a>
+  <a href="index.html" class="pill">总览</a>
+  <a href="setup.html" class="pill">环境 &amp; 预算</a>
+  <a href="roadmap.html" class="pill">🗺️ 实施路线</a>
+  <a href="project1.html" class="pill">① 结构化抽取</a>
+  <a href="project2.html" class="pill">② Text2SQL</a>
+  <a href="project3.html" class="pill">③ 从零预训练</a>
+  <a href="project4.html" class="pill active">④ 蒸馏+Agent</a>
+  <a href="eval_metrics.html" class="pill">📊 评测指标</a>
+  <a href="qwen35_architecture.html" class="pill">🧠 Qwen3.5架构</a>
+</div></nav>
+
+<div class="wrap">
+
+  <h1>方案④ 蒸馏 + Agent 工具调用小模型</h1>
+  <p class="lead">把大模型的工具调用能力蒸馏进 4B 小模型。降本 + 私有化 + Agent，三个热词全占。</p>
+
+  <div class="badges">
+    <span class="badge green">难度 <b>★★★☆☆</b></span>
+    <span class="badge blue">成本 <b>$0–5</b></span>
+    <span class="badge purple">算力 <b>Mac MLX / Colab</b></span>
+    <span class="badge warn">toB 价值 <b>★★★★☆</b></span>
+    <span class="badge">工期 <b>5–7 天</b></span>
+  </div>
+
+  <h2>一句话定位</h2>
+  <p>用 GPT-4o 为一批任务生成「工具调用轨迹」数据，蒸馏微调 Qwen3-4B，让小模型能稳定、格式正确地调用企业内部 API（function calling）。核心卖点：<b>同样的 Agent 能力，成本降 90%，可私有化</b>。</p>
+
+  <h2>为什么对 toB 有说服力</h2>
+  <ul class="check">
+    <li>2025–2026 最热的 Agent 方向，企业都在落地工具调用</li>
+    <li>toB Agent 落地的真实瓶颈正是「小模型 function-call 稳定性」—— 你解决的是真问题</li>
+    <li>蒸馏 = 直接体现工程 ROI：大模型太贵，把能力压进小模型降本</li>
+    <li>同时覆盖「蒸馏」+「Agent」两个技术热点，性价比极高</li>
+  </ul>
+
+  <h2>技术架构</h2>
+<pre><code>定义工具集 (企业 API: 查订单/查库存/发邮件...)
+   │
+[ 教师模型 GPT-4o ] ──► 对大量用户问题生成 tool-call 轨迹（蒸馏数据）
+   │
+   ▼  SFT / LoRA
+[ 学生模型 Qwen3-4B ]
+   │  推理时输出 function-call JSON
+   ▼
+格式校验 + 参数校验 ──► 执行工具 ──► 评测 (call 准确率/参数正确率) ──► 三方对比</code></pre>
+
+  <h2>数据来源</h2>
+  <table>
+    <tr><th>来源</th><th>说明</th><th>用法</th></tr>
+    <tr><td><b>GPT-4o 自造（蒸馏）</b></td><td>给定工具定义 + 用户问题，让 GPT-4o 产出标准 tool-call</td><td>核心训练数据，几美元造几千条</td></tr>
+    <tr><td><b>Glaive function-calling</b></td><td>公开的 function-calling 数据集</td><td>补充 / 冷启动</td></tr>
+    <tr><td><b>ToolACE / xLAM</b></td><td>大规模工具调用数据集</td><td>提升多样性</td></tr>
+  </table>
+
+  <h2>详细实施步骤</h2>
+  <ol class="steps">
+    <li data-n="1">
+      <span class="phase">Phase 1 · 工具定义</span>
+      <h4>设计一组企业工具 schema</h4>
+      <p>用 OpenAI function-calling 格式定义 5–10 个工具（如 <code>query_order, check_inventory, create_ticket, send_email</code>），含参数类型与必填项。这构成你的"私有 API"。</p>
+    </li>
+    <li data-n="2">
+      <span class="phase">Phase 2 · 蒸馏造数</span>
+      <h4>GPT-4o 生成调用轨迹</h4>
+      <p>批量生成多样用户问题 → 让 GPT-4o 在给定工具下产出正确的 tool-call（含单步/多步/需澄清/无需调用等情形）。这就是"蒸馏"：教师产数据。</p>
+<pre><code><span class="cmt"># 覆盖关键场景，否则学生学不全：</span>
+<span class="cmt">#  - 单工具调用 / 多工具串联</span>
+<span class="cmt">#  - 参数缺失需反问 / 问题与工具无关应拒答</span></code></pre>
+    </li>
+    <li data-n="3">
+      <span class="phase">Phase 3 · 训练</span>
+      <h4>Qwen3-4B LoRA 蒸馏微调</h4>
+      <p>Mac MLX 或 Colab Unsloth 都能跑 4B。把 tool 定义放 system，轨迹作为对话样本训练。</p>
+<pre><code>mlx_lm.lora --model Qwen/Qwen3-4B --train \
+    --data ./data --batch-size 4 --iters 1200 \
+    --adapter-path ./adapters
+mlx_lm.fuse --model Qwen/Qwen3-4B --adapter-path ./adapters \
+    --save-path ./fused_model</code></pre>
+    </li>
+    <li data-n="4">
+      <span class="phase">Phase 4 · 可靠性</span>
+      <h4>tool-call 格式 + 参数校验</h4>
+      <p>用约束解码 / JSON 校验保证输出是合法 function-call；对参数做类型与必填校验。复用方案①的可靠性思路。</p>
+    </li>
+    <li data-n="5">
+      <span class="phase">Phase 5 · 评测</span>
+      <h4>多维度评测 + 降本对比</h4>
+      <p>评测：① 是否正确判断该不该调用 ② 选对工具的准确率 ③ 参数填充正确率。再算「学生 4B 本地 vs 直接调 GPT-4o」的成本对比。</p>
+    </li>
+    <li data-n="6">
+      <span class="phase">Phase 6 · 交付</span>
+      <h4>端到端 Agent Demo</h4>
+      <p>Gradio：用户提问 → 4B 输出 tool-call → 真实执行（mock API）→ 返回结果。展示一个能跑通的小型私有 Agent。</p>
+    </li>
+  </ol>
+
+  <h2>评测对比表模板</h2>
+  <table>
+    <tr><th>模型</th><th>调用判断准确率</th><th>选对工具</th><th>参数正确率</th><th>单次成本</th><th>私有化</th></tr>
+    <tr><td>Qwen3-4B 基座</td><td>~中</td><td>~中</td><td>~低</td><td>$0</td><td>✅</td></tr>
+    <tr><td><b>你的蒸馏模型</b></td><td><b>~高</b></td><td><b>~88%</b></td><td><b>~高</b></td><td>$0</td><td>✅</td></tr>
+    <tr><td>GPT-4o（教师）</td><td>高</td><td>高</td><td>高</td><td>$$$</td><td>❌</td></tr>
+  </table>
+  <p class="small muted">卖点：4B 学生逼近 GPT-4o 教师的工具调用能力，成本 ↓90% 且可私有部署。</p>
+
+  <h2>环境与依赖</h2>
+<pre><code>pip install mlx-lm openai outlines gradio datasets
+<span class="cmt"># Colab 路线：pip install unsloth</span></code></pre>
+
+  <h2>产出物清单</h2>
+  <ul class="check">
+    <li><code>04-distill-agent/</code> repo：工具定义 + 蒸馏造数 + 训练 + 评测 + Agent demo</li>
+    <li>多维评测表 + 成本对比</li>
+    <li>端到端 Agent demo（HF Space）</li>
+    <li>蒸馏方法论说明（教师/学生/数据覆盖）</li>
+  </ul>
+
+  <h2>简历文案模板</h2>
+  <div class="box">
+    将 <b>GPT-4o 的工具调用能力蒸馏</b>进 <b>Qwen3-4B（LoRA）</b>：构造覆盖单步/多步/澄清/拒答的
+    function-calling 蒸馏数据，结合输出约束与参数校验，工具选择准确率达 <b>~88%</b>，
+    推理成本较直接调用 GPT-4o <b>↓ ~90%</b>，支持私有化 Agent 部署。完成造数、训练、评测、端到端 Demo 全流程。
+  </div>
+
+  <h2>避坑清单</h2>
+  <ul class="cross">
+    <li>数据必须覆盖"不该调用工具"的负例，否则模型乱调</li>
+    <li>多步调用容易出错，先把单步做扎实再加难度</li>
+    <li>评测要分维度（判断/选工具/填参数），笼统一个准确率说服力弱</li>
+  </ul>
+
+  <div class="pager">
+    <a href="project3.html"><span>← 上一页</span>方案③ 从零预训练</a>
+    <a class="next" href="index.html">回到 <span>总览 →</span></a>
+  </div>
+
+</div>
+</body>
+</html>
