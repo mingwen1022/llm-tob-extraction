@@ -13,3 +13,5 @@ runs/*.jsonl
 
 # os
 .DS_Store
+runs/fewshot/
+runs/*.log

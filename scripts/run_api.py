@@ -52,6 +52,10 @@ def main():
     ap.add_argument("--max-tokens", type=int, default=1024)
     ap.add_argument("--timeout", type=float, default=90, help="单请求超时(秒)")
     ap.add_argument("--retries", type=int, default=4, help="429/超时的重试次数(指数退避)")
+    ap.add_argument("--shots", type=int, default=0,
+                    help="in-context 示例条数(实验B)。取 --shot-file 的固定前N条，不随机，可复现")
+    ap.add_argument("--shot-file", default="data/cord/train.eval.jsonl",
+                    help="few-shot 示例来源(必须是训练集，不能与测试集重叠)")
     args = ap.parse_args()
 
     from openai import OpenAI
@@ -70,6 +74,24 @@ def main():
         from shared.schema import build_system_prompt
         override_system = build_system_prompt(args.domain, rich=True, types=True)
 
+    # ---- few-shot 示例（实验B）----
+    # 取固定前 N 条（不随机，保证可复现），拼成 user/assistant 交替的 in-context 示例。
+    # 污染核查：示例绝不能出现在测试集里，否则 few-shot 等于泄题。
+    shot_msgs: list[dict] = []
+    if args.shots > 0:
+        shot_rows = [json.loads(l) for l in open(args.shot_file) if l.strip()][: args.shots]
+        if len(shot_rows) < args.shots:
+            sys.exit(f"--shot-file 只有 {len(shot_rows)} 条，不足 {args.shots} 条")
+        test_texts = {r["user"] for r in rows}
+        leaked = [i for i, s in enumerate(shot_rows) if s["user"] in test_texts]
+        if leaked:
+            sys.exit(f"few-shot 污染：示例 {leaked} 出现在测试集里，换 --shot-file 或调整取法")
+        for s in shot_rows:
+            shot_msgs.append({"role": "user", "content": s["user"]})
+            shot_msgs.append({"role": "assistant",
+                              "content": json.dumps(s["gt"], ensure_ascii=False)})
+        print(f"[few-shot] {args.shots} 条示例 <- {args.shot_file}（已核查与测试集零重叠）")
+
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     extra = {"response_format": {"type": "json_object"}} if args.json_mode else {}
     # 部分模型(如 claude-sonnet-5)弃用了 temperature 参数 → --no-temperature 就不传
@@ -82,9 +104,11 @@ def main():
         for i, r in enumerate(rows):
             messages = [
                 {"role": "system", "content": override_system or r["system"]},
+                *shot_msgs,
                 {"role": "user", "content": r["user"]},
             ]
             output, delay = None, 5
+            row_in = row_out = 0
             for attempt in range(args.retries + 1):
                 try:
                     resp = client.chat.completions.create(
@@ -93,8 +117,10 @@ def main():
                     )
                     output = resp.choices[0].message.content or ""
                     if resp.usage:
-                        tok_in += resp.usage.prompt_tokens or 0
-                        tok_out += resp.usage.completion_tokens or 0
+                        row_in = resp.usage.prompt_tokens or 0
+                        row_out = resp.usage.completion_tokens or 0
+                        tok_in += row_in
+                        tok_out += row_out
                     break
                 except Exception as e:
                     if attempt == args.retries:
@@ -102,12 +128,17 @@ def main():
                     else:
                         time.sleep(delay)          # 429/超时 → 退避重试
                         delay = min(delay * 2, 60)
-            fout.write(json.dumps({"output": output}, ensure_ascii=False) + "\n")
+            fout.write(json.dumps({"output": output, "tok_in": row_in, "tok_out": row_out},
+                                  ensure_ascii=False) + "\n")
+            fout.flush()          # 长任务要能实时看进度/断点续跑
             if (i + 1) % 20 == 0:
                 print(f"  {i+1}/{len(rows)}  ({(time.time()-t0)/(i+1):.2f}s/条)")
 
     dt = time.time() - t0
-    print(f"done: {len(rows)} 条 · {dt:.1f}s · tokens in={tok_in} out={tok_out} -> {args.out}")
+    n = len(rows)
+    print(f"done: {n} 条 · {dt:.1f}s · shots={args.shots} · "
+          f"tokens in={tok_in} out={tok_out} -> {args.out}")
+    print(f"  单条均值: in={tok_in/n:.0f} out={tok_out/n:.0f} tok  ({dt/n:.2f}s/条)")
     print(f"（成本 = tokens × 该模型单价，用 in/out token 数自行乘）")
 
 

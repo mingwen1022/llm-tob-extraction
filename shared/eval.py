@@ -180,10 +180,26 @@ def main():
     ap.add_argument("--gold", required=True, help="jsonl, each line {'gt': {...}}")
     ap.add_argument("--domain", default="cord")
     ap.add_argument("--name", default="run")
+    ap.add_argument("--exclude-leaked-from", default=None,
+                    help="训练集路径：丢掉原文在训练集中出现过的测试样本（CORD 官方 split "
+                         "自带 8 条跨 split 重复，对外报告一律用去泄漏子集）")
     args = ap.parse_args()
 
-    preds = [r["output"] for r in _load_jsonl(args.pred)]
-    golds = [r["gt"] for r in _load_jsonl(args.gold)]
+    pred_rows = _load_jsonl(args.pred)
+    gold_rows = _load_jsonl(args.gold)
+    assert len(pred_rows) == len(gold_rows), "predictions / golds length mismatch"
+
+    if args.exclude_leaked_from:
+        train_texts = {r["user"] for r in _load_jsonl(args.exclude_leaked_from)}
+        keep = [i for i, g in enumerate(gold_rows) if g.get("user") not in train_texts]
+        n_drop = len(gold_rows) - len(keep)
+        print(f"[去泄漏] {args.exclude_leaked_from} → 丢弃 {n_drop} 条，"
+              f"保留 {len(keep)}/{len(gold_rows)} 条")
+        pred_rows = [pred_rows[i] for i in keep]
+        gold_rows = [gold_rows[i] for i in keep]
+
+    preds = [r["output"] for r in pred_rows]
+    golds = [r["gt"] for r in gold_rows]
     res = evaluate(preds, golds, domain=args.domain)
     print(res["report"])
     print("\n" + build_comparison_table({args.name: res}))
