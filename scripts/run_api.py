@@ -79,13 +79,18 @@ def main():
     # 污染核查：示例绝不能出现在测试集里，否则 few-shot 等于泄题。
     shot_msgs: list[dict] = []
     if args.shots > 0:
-        shot_rows = [json.loads(l) for l in open(args.shot_file) if l.strip()][: args.shots]
-        if len(shot_rows) < args.shots:
-            sys.exit(f"--shot-file 只有 {len(shot_rows)} 条，不足 {args.shots} 条")
+        pool = [json.loads(l) for l in open(args.shot_file) if l.strip()]
         test_texts = {r["user"] for r in rows}
-        leaked = [i for i, s in enumerate(shot_rows) if s["user"] in test_texts]
-        if leaked:
-            sys.exit(f"few-shot 污染：示例 {leaked} 出现在测试集里，换 --shot-file 或调整取法")
+        # 取「前 N 条**干净的**」：CORD 官方 split 自带跨 split 重复，训练集里混着
+        # 测试集原文（实测第 44 条即是），直接取前 N 条会把测试题当示例喂进去。
+        # 跳过污染项继续往后取，仍然确定、可复现。
+        clean = [s for s in pool if s["user"] not in test_texts]
+        n_skipped = len(pool) - len(clean)
+        shot_rows = clean[: args.shots]
+        if len(shot_rows) < args.shots:
+            sys.exit(f"--shot-file 去污染后只剩 {len(clean)} 条，不足 {args.shots} 条")
+        if n_skipped:
+            print(f"[few-shot] 跳过 {n_skipped} 条与测试集重叠的样本")
         for s in shot_rows:
             shot_msgs.append({"role": "user", "content": s["user"]})
             shot_msgs.append({"role": "assistant",
