@@ -22,22 +22,6 @@ from run_orchestrator import Orchestrator, DOMAIN_FILES
 DOMAIN_LABEL = {"cord": "🧾 票据/收据抽取", "duee_fin": "📈 金融公告事件抽取",
                 "ccks_fraud": "🚨 金融风控/反欺诈案例抽取"}
 
-# 已测得的选型对比数据（来自 runs/baseline_results.md + duee_fin_results.md，干净子集）
-COMPARISON_MD = """
-### 📊 为什么用本地 LoRA，而不是直接调大模型 API？
-
-| 方案 | CORD micro-F1 | DuEE-fin micro-F1 | 边际成本 | 数据出境 | 可私有化 |
-|---|---|---|---|---|---|
-| **本地 4B LoRA（本demo）** | **0.945** | **0.861** | **$0** | 否 | ✅ |
-| Gemini-3.5-Flash（前沿API） | 0.866 | — | 按量 | 是 | ❌ |
-| Qwen3.7-Max（国产大模型） | 0.854 | — | 按量·思考模式×5 | 是 | 部分 |
-| DeepSeek-V4-Pro（国产大模型） | 0.838 | — | 按量·思考模式×5 | 是 | 部分 |
-| 基座·完整prompt（不微调） | 0.647 | 0.322 | $0 | 否 | ✅ |
-
-**结论**：在数据不能出域的金融/票据场景，微调后的本地小模型在**精度、成本、合规**三个维度全面胜出——
-这不是单一数据集的偶然，两个语言/任务完全不同的域（英文小票 / 中文金融公告）微调提升幅度几乎一致（+0.54）。
-"""
-
 N_EXAMPLES_PER_DOMAIN = 8
 
 EXAMPLES: dict[str, list[str]] = {}
@@ -111,8 +95,6 @@ with gr.Blocks(title="多场景 toB 结构化抽取 Orchestrator") as demo:
             domain_out = gr.Textbox(label="识别的文档类型（路由结果）")
             json_out = gr.Code(label="抽取结果（标准化 JSON）", language="json")
             info_out = gr.Textbox(label="处理链路 & 延迟", lines=3)
-
-    gr.Markdown(COMPARISON_MD)
 
     btn_cord.click(lambda: pick_example("cord"), outputs=inp)
     btn_duee.click(lambda: pick_example("duee_fin"), outputs=inp)
