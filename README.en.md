@@ -17,6 +17,16 @@ service that exposes a single entry point.
 > Every number, every measurement caveat and every methodological limitation lives on the
 > detail page above — this README deliberately does not repeat them, **so the two can't drift
 > apart**.
+
+| Receipt → `cord` | Financial filing → `duee_fin` | Fraud case → `ccks_fraud` |
+| --- | --- | --- |
+| ![receipt](docs/screenshots/demo-receipt.png) | ![filing](docs/screenshots/demo-announcement.png) | ![fraud](docs/screenshots/demo-fraud.png) |
+
+One entry point, one 4B base model. The caller never has to say what kind of document this
+is: the system classifies zero-shot, swaps to the matching adapter, extracts under that
+domain's schema, and reports which path it took and how long each leg took. The ~20s latency
+in these screenshots is an unoptimised local Mac dev setup — a vLLM deployment is expected to
+be an order of magnitude faster.
 >
 > The rest of this repository's documentation is in Chinese.
 
