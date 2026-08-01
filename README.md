@@ -1,14 +1,33 @@
-# 面向本地私有化的 to-B 文档抽取 · 模型选型与评测研究 + Orchestrator 产品
+# 多场景结构化抽取 Orchestrator · 本地微调 vs 大模型 API 的选型实验
 
-"用大模型 API 还是本地微调小模型？" 的选型 + 评测研究，包装成多场景私有化抽取产品 Orchestrator。
-面向 AI 产品经理岗（to-B / fintech）。**当前**：3 个独立域（CORD 英文小票 / DuEE-fin 中文金融公告 /
-CCKS-fraud 中文反欺诈案例）`文本 → JSON`，共享一个基座 + 3 个 LoRA adapter，零样本路由自动分发。
+**简体中文** · [English](README.en.md)
+
+做 to-B 文档抽取绕不开一个岔路口：客户数据不能出内网，那到底该买通用大模型 API，还是在本地微调一个小模型？这个问题通常靠拍脑袋，这个项目把它做成了可测的实验——三个语言、文档类型、任务结构都不同的域，同一个 4B 基座、同一套 LoRA 配方、同一把评测尺子，跑完整实验矩阵，再把结论包装成一个对外只有一个入口的抽取服务。
+
+**完整实验设计、三域结果与选型结论**：<https://mingwen.net/projects/extract-orchestrator.html>
+
+> 全部数字、口径与方法论局限都写在详情页，本 README 不重复——**避免两处数字打架**。这里只讲怎么跑起来、代码长什么样。
+
+## 一句话结论
+
+三域微调提升稳定在 **+0.49~0.54**（micro-F1 由 0.409 / 0.322 / 0.223 提升至 0.945 / 0.861 / 0.714，schema 合法率全部拉到 100%）。但**零示例对照并不公平**：补上 in-context 示例重测后，本地 4B 对最优 API 的领先从 8 个点收敛到 1.8 个点，而 API 自身重跑波动就有 ±1.4 个点——所以**精度不再是选型理由**，剩下的是合规、成本结构与输出确定性。这个自我修正的完整过程写在详情页 §4.3 与 §7.2。
+
+## 当前状态
+
+| 部分 | 状态 |
+| --- | --- |
+| 三域数据转换与泄漏核查 | ✅ CORD / DuEE-fin / CCKS-fraud，接入前必跑 `dedup_check.py` |
+| 实验矩阵 E0–E4 | ✅ 基座自由 / 基座约束 / LoRA 自由 / LoRA 约束 / 六个前沿与国产 API 对照 |
+| few-shot 梯度对照 | ✅ 0/4/8/16/32/64 六档（Gemini、MiniMax 跑满，其余 0 与 16 两档） |
+| Orchestrator | ✅ 零样本路由 + 三 adapter 热切换，三域路由准确率 98.9% |
+| 域外兜底 | 🔶 已实测域外行为与填充率阈值，方案未实现（详情页 §7.1） |
+| 生产部署 | ❌ 本地 transformers+PEFT 开发配置；vLLM 多 LoRA 只做了架构设计 |
 
 - 定位与方案：[`doc/plans/项目定位与方案.md`](doc/plans/项目定位与方案.md)（WHY）· 执行计划：[`doc/plans/PLAN.md`](doc/plans/PLAN.md)（WHAT/下一步）
-- 展示站点：打开 [`doc/site/index.html`](doc/site/index.html)（总览 / 实施路线 / 评测指标 / 评测结果 / Qwen3.5架构 / 产品架构 / 产品Demo）
-- 结果：三域 E0→E2 micro-F1 提升稳定在 **+0.49~0.54**（CORD 0.409→0.945，DuEE-fin 0.322→0.861，CCKS-fraud 0.223→0.714，schema合法率均→100%），完整数字见 [`doc/site/results.html`](doc/site/results.html) / [`runs/`](runs/)
+- 原始结果：[`runs/`](runs/)（各域 `*_results.md`、`e4_fewshot_summary.md`、`ood_probe_summary.md`）
 - 产品 Demo：`uv run python scripts/demo_app.py` 本地起一个可交互的多域抽取 Gradio 界面
-- 基座锁定：**Qwen3.5-4B** · 训练：**HF PEFT/Unsloth** · 评测：**transformers+PEFT** · 服务：**PEFT多adapter（本地）/ vLLM多LoRA（生产设计）**
+- 基座锁定：**Qwen3.5-4B** · 训练：**HF PEFT / Unsloth** · 评测：**transformers + PEFT** · 服务：**PEFT 多 adapter（本地）/ vLLM 多 LoRA（生产设计）**
+- 数据集为公开学术数据（CORD / DuEE-fin / CCKS2021），不含任何真实客户文档
 
 ## 目录结构
 
@@ -40,7 +59,7 @@ legacy/            # 早期草稿方案（已归档，不再维护）
 
 ## 快速开始（用 uv 管理环境）
 
-依赖分组：核心（数据+评测，默认装）/ `infer`（本地推理+约束解码）/ `baseline`（GPT-4o）/ `demo`（Gradio）。
+依赖分组：核心（数据+评测，默认装）/ `infer`（本地推理+约束解码）/ `baseline`（API 对照）/ `demo`（Gradio）。
 
 ```bash
 # 安装核心依赖（建 .venv）
@@ -55,7 +74,7 @@ uv run python -m shared.convert_cord --out data/cord
 
 # 3) 本地推理/评测需要重包，按需加装：
 uv sync --extra infer        # transformers + peft + torch + outlines
-uv sync --extra baseline     # openai (E4)
+uv sync --extra baseline     # API 对照 (E4)
 uv sync --extra demo         # gradio
 
 # 4) 基线 E0/E1（无需训练）
@@ -75,12 +94,12 @@ uv run python -m shared.eval --pred runs/e0.jsonl --gold data/cord/test.eval.jso
 | E1 | 基座·约束 | `--base --constrained` |
 | E2 | LoRA·自由 | `--base --adapter` |
 | E3 | LoRA·约束 ⭐ | `--base --adapter --constrained` |
-| E4 | GPT-4o | 单独脚本（待加） |
+| E4 | 前沿 / 国产 API 对照 | `scripts/run_api.py`（已跑 Gemini / Qwen / Claude / DeepSeek / Kimi / GLM / MiniMax，含 few-shot 梯度） |
 
 ## 扩展到新领域（Phase 2）
 
 1. 在 `shared/schema.py` 的 `SCHEMA_REGISTRY` 注册新域（pydantic 模型 + task 描述）
 2. 写 `shared/convert_<域>.py`（标注 → `{system,user,gt}` / messages）
 3. 复用 `run_inference.py` + `shared.eval`，训练同基座同 r=16 的新 adapter
-4. Phase 3：vLLM 多 adapter 热插拔 + Orchestrator 路由
+4. Orchestrator 路由无需改动——新域在注册表里加一段描述即自动生效，不重训任何模型；生产侧的 vLLM 多 adapter 热插拔仍是设计，未实测
 ```
