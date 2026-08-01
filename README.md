@@ -8,11 +8,11 @@
 
 > 全部数字、口径与方法论局限都写在详情页，本 README 不重复——**避免两处数字打架**。这里只讲怎么跑起来、代码长什么样。
 
-| 票据（路由至 `cord`） | 金融公告（路由至 `duee_fin`） | 反欺诈（路由至 `ccks_fraud`） |
-| --- | --- | --- |
-| ![票据](docs/screenshots/demo-receipt.png) | ![公告](docs/screenshots/demo-announcement.png) | ![反欺诈](docs/screenshots/demo-fraud.png) |
+| 票据（路由至 `cord`） | 反欺诈（路由至 `ccks_fraud`） |
+| --- | --- |
+| ![票据](docs/screenshots/demo-receipt.png) | ![反欺诈](docs/screenshots/demo-fraud.png) |
 
-同一个入口、同一个 4B 基座，调用方不需要告诉系统这是什么类型的文档：系统零样本判类、切到对应 adapter、按该域 schema 约束抽取，并回报走了哪条链路与各段延迟。截图里的延迟（20 秒量级）是 Mac 本地未优化的开发环境数字，生产用 vLLM 部署预期快一个量级。
+同一个入口、同一个 4B 基座，调用方不需要告诉系统这是什么类型的文档：系统零样本判类、切到对应 adapter、按该域 schema 约束抽取，并回报走了哪条链路与各段延迟。截图里的延迟（10~25 秒）是 Mac 本地未优化的开发环境数字，生产用 vLLM 部署预期快一个量级。
 
 ## 一句话结论
 
