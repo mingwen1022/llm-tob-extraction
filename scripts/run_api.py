@@ -114,6 +114,7 @@ def main():
             ]
             output, delay = None, 5
             row_in = row_out = 0
+            t_row = time.time()
             for attempt in range(args.retries + 1):
                 try:
                     resp = client.chat.completions.create(
@@ -133,7 +134,10 @@ def main():
                     else:
                         time.sleep(delay)          # 429/超时 → 退避重试
                         delay = min(delay * 2, 60)
-            fout.write(json.dumps({"output": output, "tok_in": row_in, "tok_out": row_out},
+            # latency_s 只在**单进程顺序**跑时才是干净的单请求延迟；
+            # 并发跑多个 cell 时它包含排队/限流，不可用于跨模型比较。
+            fout.write(json.dumps({"output": output, "tok_in": row_in, "tok_out": row_out,
+                                   "latency_s": round(time.time() - t_row, 3)},
                                   ensure_ascii=False) + "\n")
             fout.flush()          # 长任务要能实时看进度/断点续跑
             if (i + 1) % 20 == 0:

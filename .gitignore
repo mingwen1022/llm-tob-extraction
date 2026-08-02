@@ -15,3 +15,4 @@ runs/*.jsonl
 .DS_Store
 runs/fewshot/
 runs/*.log
+runs/latency_bench/
