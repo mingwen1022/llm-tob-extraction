@@ -53,20 +53,38 @@ ROUNDS = [
          title="第二轮 · API 补足示例（few-shot）",
          desc="给 API 补上 in-context 示例后重测。Gemini 与 MiniMax 跑满 0/4/8/16/32/64 六档，"
               "其余四家跑 0 与 16 两档。",
+         # 用「模型 × shots」表达，页面会自动生成梯度矩阵
+         matrix=dict(
+             models=["Gemini-3.5-Flash", "MiniMax-M3", "Kimi-K3", "GLM-5.2",
+                     "Qwen3.7-Max", "DeepSeek-V4-Pro"],
+             shots=[0, 4, 8, 16, 32, 64],
+             slug={"Gemini-3.5-Flash": "google_gemini-3_5-flash",
+                   "MiniMax-M3": "MiniMaxAI_MiniMax-M3",
+                   "Kimi-K3": "moonshotai_kimi-k3",
+                   "GLM-5.2": "zai-org_GLM-5_2-FP8",
+                   "Qwen3.7-Max": "Qwen_Qwen3_7-Max",
+                   "DeepSeek-V4-Pro": "deepseek-ai_DeepSeek-V4-Pro"}),
          configs=[
-             ("Gemini 0-shot",  "runs/fewshot/google_gemini-3_5-flash_s0.jsonl"),
-             ("Gemini 4-shot",  "runs/fewshot/google_gemini-3_5-flash_s4.jsonl"),
-             ("Gemini 8-shot",  "runs/fewshot/google_gemini-3_5-flash_s8.jsonl"),
-             ("Gemini 16-shot", "runs/fewshot/google_gemini-3_5-flash_s16.jsonl"),
-             ("Gemini 32-shot", "runs/fewshot/google_gemini-3_5-flash_s32.jsonl"),
-             ("Gemini 64-shot", "runs/fewshot/google_gemini-3_5-flash_s64.jsonl"),
-             ("MiniMax 0-shot",  "runs/fewshot/MiniMaxAI_MiniMax-M3_s0.jsonl"),
-             ("MiniMax 16-shot", "runs/fewshot/MiniMaxAI_MiniMax-M3_s16.jsonl"),
-             ("MiniMax 64-shot", "runs/fewshot/MiniMaxAI_MiniMax-M3_s64.jsonl"),
-             ("Kimi-K3 16-shot",  "runs/fewshot/moonshotai_kimi-k3_s16.jsonl"),
-             ("GLM-5.2 16-shot",  "runs/fewshot/zai-org_GLM-5_2-FP8_s16.jsonl"),
-             ("Qwen3.7-Max 16-shot", "runs/fewshot/Qwen_Qwen3_7-Max_s16.jsonl"),
-             ("DeepSeek 16-shot", "runs/fewshot/deepseek-ai_DeepSeek-V4-Pro_s16.jsonl"),
+             ("Gemini 0",  "runs/fewshot/google_gemini-3_5-flash_s0.jsonl"),
+             ("Gemini 4",  "runs/fewshot/google_gemini-3_5-flash_s4.jsonl"),
+             ("Gemini 8",  "runs/fewshot/google_gemini-3_5-flash_s8.jsonl"),
+             ("Gemini 16", "runs/fewshot/google_gemini-3_5-flash_s16.jsonl"),
+             ("Gemini 32", "runs/fewshot/google_gemini-3_5-flash_s32.jsonl"),
+             ("Gemini 64", "runs/fewshot/google_gemini-3_5-flash_s64.jsonl"),
+             ("MiniMax 0",  "runs/fewshot/MiniMaxAI_MiniMax-M3_s0.jsonl"),
+             ("MiniMax 4",  "runs/fewshot/MiniMaxAI_MiniMax-M3_s4.jsonl"),
+             ("MiniMax 8",  "runs/fewshot/MiniMaxAI_MiniMax-M3_s8.jsonl"),
+             ("MiniMax 16", "runs/fewshot/MiniMaxAI_MiniMax-M3_s16.jsonl"),
+             ("MiniMax 32", "runs/fewshot/MiniMaxAI_MiniMax-M3_s32.jsonl"),
+             ("MiniMax 64", "runs/fewshot/MiniMaxAI_MiniMax-M3_s64.jsonl"),
+             ("Kimi-K3 0",   "runs/fewshot/moonshotai_kimi-k3_s0.jsonl"),
+             ("Kimi-K3 16",  "runs/fewshot/moonshotai_kimi-k3_s16.jsonl"),
+             ("GLM-5.2 0",   "runs/fewshot/zai-org_GLM-5_2-FP8_s0.jsonl"),
+             ("GLM-5.2 16",  "runs/fewshot/zai-org_GLM-5_2-FP8_s16.jsonl"),
+             ("Qwen-Max 0",  "runs/fewshot/Qwen_Qwen3_7-Max_s0.jsonl"),
+             ("Qwen-Max 16", "runs/fewshot/Qwen_Qwen3_7-Max_s16.jsonl"),
+             ("DeepSeek 0",  "runs/fewshot/deepseek-ai_DeepSeek-V4-Pro_s0.jsonl"),
+             ("DeepSeek 16", "runs/fewshot/deepseek-ai_DeepSeek-V4-Pro_s16.jsonl"),
          ]),
     dict(slug="round3_cord", domain="cord",
          title="第三轮 · 本地微调：CORD（英文收据）",
@@ -84,7 +102,7 @@ ROUNDS = [
 
 CSS = """*{box-sizing:border-box}
 body{font:14px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB",sans-serif;
- margin:0;padding:22px;max-width:1180px;margin-inline:auto;color:#1e1e1e;background:#fff}
+ margin:0;padding:22px;max-width:1500px;margin-inline:auto;color:#1e1e1e;background:#fff}
 a{color:#1c7ed6}
 h1{font-size:22px;margin:0 0 3px} h2{font-size:16px;margin:26px 0 9px}
 .sub{color:#868e96;font-size:13px;margin-bottom:16px}
@@ -96,9 +114,19 @@ th{background:#f8f9fa;font-weight:600}
 td.n{font-family:ui-monospace,monospace}
 tr.hl td{background:#ebfbee}
 .c{border:1px solid #e9ecef;border-radius:9px;margin-bottom:9px;overflow:hidden}
-.ch{padding:9px 12px;cursor:pointer;display:flex;gap:8px;align-items:baseline}
+.ch{padding:9px 12px;cursor:pointer;display:grid;gap:6px;align-items:center}
 .ch:hover{background:#f8f9fa}
-.q{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.q{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+/* 列头：与卡片标题同一套 grid，列宽由 --cols 决定 */
+.chead{position:sticky;top:46px;z-index:8;background:#fff;display:grid;gap:6px;
+ padding:7px 12px;margin:0 0 7px;border:1px solid #e9ecef;border-radius:9px;
+ font-size:11px;color:#868e96;letter-spacing:.03em;align-items:end}
+.chead .cn{font-weight:600;color:#495057;line-height:1.25;word-break:break-word}
+.chead .unit{font-family:ui-monospace,monospace;font-size:10px;color:#adb5bd}
+.f1{font-family:ui-monospace,monospace;font-size:12px;text-align:center;
+ padding:2px 0;border-radius:5px;background:#f1f3f5;color:#495057}
+.f1.ok{background:#d3f9d8;color:#2b8a3e} .f1.bad{background:#ffe3e3;color:#c92a2a}
+.f1.mid{background:#fff3bf;color:#a06e00}
 .p{font-size:11px;padding:2px 7px;border-radius:99px;background:#f1f3f5;color:#495057;
  font-family:ui-monospace,monospace;white-space:nowrap}
 .p.bad{background:#ffe3e3;color:#c92a2a} .p.warn{background:#fff3bf;color:#a06e00}
@@ -246,10 +274,51 @@ def build_round(rd) -> dict:
         results[name] = [per_doc(rows[i], gold[i], model) for i in keep]
     aggs = {n: agg(results[n]) for n in names}
 
-    # ---- 顶部聚合表 ----
+    # ---- 顶部聚合 ----
     best = max(aggs.values(), key=lambda a: a["micro"])["micro"]
-    head = ["<table><tr><th>配置</th><th>Precision</th><th>Recall</th><th>micro-F1</th>"
-            "<th>macro·按文档</th><th>schema 合法率</th><th>完美率</th><th>全错率</th></tr>"]
+    head = []
+
+    # 有 matrix 配置的（第二轮）先出一张「模型 × shots」梯度矩阵
+    if rd.get("matrix"):
+        m = rd["matrix"]
+        name_of = {}   # (model, shot) -> 配置展示名
+        for n, path in rd["configs"]:
+            for mo, sl in m["slug"].items():
+                for s in m["shots"]:
+                    if path.endswith(f"{sl}_s{s}.jsonl"):
+                        name_of[(mo, s)] = n
+        head.append("<h2>梯度矩阵 · micro-F1（行=模型，列=示例条数）</h2>")
+        head.append("<table><tr><th>模型</th>" +
+                    "".join(f"<th>{s}-shot</th>" for s in m["shots"]) +
+                    "<th>0→最佳</th></tr>")
+        for mo in m["models"]:
+            cells, vals = [], []
+            for s in m["shots"]:
+                n = name_of.get((mo, s))
+                if n is None:
+                    cells.append('<td class="n" style="opacity:.35">—</td>')
+                    continue
+                v = aggs[n]["micro"]
+                vals.append((s, v))
+                top = ' style="background:#ebfbee;font-weight:600"' if v == max(
+                    aggs[name_of[(mo, x)]]["micro"] for x in m["shots"] if (mo, x) in name_of) else ""
+                cells.append(f'<td class="n"{top}>{v:.3f}</td>')
+            delta = ""
+            if len(vals) >= 2:
+                z = dict(vals).get(0)
+                if z is not None:
+                    delta = f'+{max(v for _, v in vals) - z:.3f}'
+            head.append(f'<tr><td>{esc(mo)}</td>{"".join(cells)}<td class="n">{delta}</td></tr>')
+        head.append("</table>")
+        head.append('<div class="note">绿底=该模型自己的最佳档。'
+                    'Gemini 32→64 完全持平（0.927→0.927）确认<b>饱和</b>；'
+                    'MiniMax 16 档后进入 0.907~0.922 的噪声带。'
+                    '同样 16 个示例各家收益从 +0.036 到 +0.078 差一倍多，'
+                    '<b>「给 API 加示例」的收益并不可预期</b>。</div>')
+        head.append("<h2>各配置完整指标</h2>")
+
+    head.append("<table><tr><th>配置</th><th>Precision</th><th>Recall</th><th>micro-F1</th>"
+                "<th>macro·按文档</th><th>schema 合法率</th><th>完美率</th><th>全错率</th></tr>")
     for n in names:
         a = aggs[n]
         hl = ' class="hl"' if a["micro"] == best else ""
@@ -303,11 +372,13 @@ def build_round(rd) -> dict:
         searchable = g["user"][:400] + " " + json.dumps(g["gt"], ensure_ascii=False)[:400] + \
                      " " + str(s_main["raw"])[:400]
 
-        badges = [f'<span class="p id">#{i}</span>']
+        badges = [f'<span class="q">{esc(g["user"][:110])}</span>',
+                  f'<span class="p id">#{i}</span>']
         for n in names:
             s = results[n][pos]
-            cls = "ok" if s["f1"] >= 0.999 else ("bad" if s["f1"] <= 0.001 else "")
-            badges.append(f'<span class="p {cls}">{esc(n)} {s["f1"]:.2f}</span>')
+            cls = "ok" if s["f1"] >= 0.999 else ("bad" if s["f1"] <= 0.001 else
+                                                 ("mid" if s["f1"] < 0.7 else ""))
+            badges.append(f'<span class="f1 {cls}">{s["f1"]:.2f}</span>')
 
         body = [f'<div class="k">输入原文</div><pre>{esc(g["user"][:1500])}</pre>',
                 f'<div class="k">GOLD</div><pre>{esc(json.dumps(g["gt"], ensure_ascii=False, indent=1))}</pre>',
@@ -333,20 +404,36 @@ def build_round(rd) -> dict:
 
         cards.append(
             f'<div class="c" data-tags="{",".join(tags)}" data-text="{esc(searchable)}">'
-            f'<div class="ch"><span class="q">{esc(g["user"][:110])}</span>{"".join(badges)}</div>'
+            f'<div class="ch">{"".join(badges)}</div>'
             f'<div class="b">{"".join(body)}</div></div>')
+
+    # ---- 列头（与卡片标题共用同一套 grid）----
+    colw = 62 if len(names) > 8 else 76
+    grid = f"grid-template-columns:minmax(110px,1fr) 40px repeat({len(names)},{colw}px)"
+    chead = (f'<div class="chead" style="{grid}">'
+             f'<div>文档原文（点击展开）</div><div class="unit">#</div>'
+             + "".join(f'<div class="cn">{esc(n)}</div>' for n in names)
+             + '</div>')
+    # 让卡片标题用同一套 grid
+    cards = [c.replace('<div class="ch">', f'<div class="ch" style="{grid}">') for c in cards]
 
     page = (f'<!doctype html><meta charset=utf-8><title>{esc(rd["title"])}</title>'
             f'<style>{CSS}</style>'
             f'<a class="back" href="index.html">← 返回评测目录</a>'
             f'<h1>{esc(rd["title"])}</h1>'
-            f'<div class="sub">{esc(rd["desc"])}　·　{len(keep)} 条（已去泄漏）·　点标题展开看逐条差异</div>'
+            f'<div class="sub">{esc(rd["desc"])}　·　{len(keep)} 条（已去泄漏）</div>'
             f'{"".join(head)}'
-            f'<div class="note"><b>怎么读</b>：卡片标题右侧是各配置在<b>这一条</b>上的 F1；'
-            f'展开后每个配置下方的彩色小标签是差异明细——'
+            f'<h2>逐条明细</h2>'
+            f'<div class="note"><b>怎么读</b>：下表每行是一份文档，'
+            f'<b>各列数字 = 该配置在这一条上的 micro-F1</b>'
+            f'（<span class="f1 ok">1.00</span> 全对 · '
+            f'<span class="f1">0.7~1</span> 部分对 · '
+            f'<span class="f1 mid">&lt;0.7</span> 差 · '
+            f'<span class="f1 bad">0.00</span> 全错）。'
+            f'点行展开看输入原文、GOLD、各配置输出，以及差异逐项拆解——'
             f'<span class="d fp">红=多抽/抽错(FP)</span> '
-            f'<span class="d fn">黄=漏抽(FN)</span>，格式是 <code>字段=归一化值</code>。</div>'
-            f'{"".join(bar)}{"".join(cards)}'
+            f'<span class="d fn">黄=漏抽(FN)</span>，格式 <code>字段=归一化值</code>。</div>'
+            f'{"".join(bar)}{chead}{"".join(cards)}'
             f'<script>{JS}</script>')
     return dict(html=page, aggs=aggs, names=names, n=len(keep))
 
@@ -380,7 +467,7 @@ def build_index(built):
     c2 = built["round2_api_fewshot"]["aggs"]
     c3 = built["round3_cord"]["aggs"]
     ladder = [("API 裸跑最佳（Qwen3.7-Max）", c1["Qwen3.7-Max"]),
-              ("API few-shot 最佳（Gemini 32-shot）", c2["Gemini 32-shot"]),
+              ("API few-shot 最佳（Gemini 32-shot）", c2["Gemini 32"]),
               ("本地基座（完整 prompt，未微调）", c1["本地基座 4B"]),
               ("本地 LoRA 微调", c3["LoRA 微调"])]
     ladder_rows = "".join(
