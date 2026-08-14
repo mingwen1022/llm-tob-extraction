@@ -52,18 +52,20 @@ ROUNDS = [
     dict(slug="round2_api_fewshot", domain="cord",
          title="第二轮 · API 补足示例（few-shot）",
          desc="给 API 补上 in-context 示例后重测。Gemini 与 MiniMax 跑满 0/4/8/16/32/64 六档，"
-              "其余四家跑 0 与 16 两档。",
+              "其余四家跑 0 与 16 两档。本地基座 4B 也跑了 0/16/32 三档——"
+              "同一个 4B、同一批示例、同一个 prompt，与第三轮的 LoRA 只差「示例进上下文还是进权重」。",
          # 用「模型 × shots」表达，页面会自动生成梯度矩阵
          matrix=dict(
              models=["Gemini-3.5-Flash", "MiniMax-M3", "Kimi-K3", "GLM-5.2",
-                     "Qwen3.7-Max", "DeepSeek-V4-Pro"],
+                     "Qwen3.7-Max", "DeepSeek-V4-Pro", "本地基座4B"],
              shots=[0, 4, 8, 16, 32, 64],
              slug={"Gemini-3.5-Flash": "google_gemini-3_5-flash",
                    "MiniMax-M3": "MiniMaxAI_MiniMax-M3",
                    "Kimi-K3": "moonshotai_kimi-k3",
                    "GLM-5.2": "zai-org_GLM-5_2-FP8",
                    "Qwen3.7-Max": "Qwen_Qwen3_7-Max",
-                   "DeepSeek-V4-Pro": "deepseek-ai_DeepSeek-V4-Pro"}),
+                   "DeepSeek-V4-Pro": "deepseek-ai_DeepSeek-V4-Pro",
+                   "本地基座4B": "e0_full"}),
          configs=[
              ("Gemini 0",  "runs/fewshot/google_gemini-3_5-flash_s0.jsonl"),
              ("Gemini 4",  "runs/fewshot/google_gemini-3_5-flash_s4.jsonl"),
@@ -85,11 +87,18 @@ ROUNDS = [
              ("Qwen-Max 16", "runs/fewshot/Qwen_Qwen3_7-Max_s16.jsonl"),
              ("DeepSeek 0",  "runs/fewshot/deepseek-ai_DeepSeek-V4-Pro_s0.jsonl"),
              ("DeepSeek 16", "runs/fewshot/deepseek-ai_DeepSeek-V4-Pro_s16.jsonl"),
+             ("本地基座 0",  "runs/e0_full.jsonl"),
+             ("本地基座 16", "runs/e0_full_s16.jsonl"),
+             ("本地基座 32", "runs/e0_full_s32.jsonl"),
          ]),
     dict(slug="round3_cord", domain="cord",
          title="第三轮 · 本地微调：CORD（英文收据）",
-         desc="同一基座 Qwen3.5-4B，微调前后对比。基座用完整 prompt（含类型要求），口径一致。",
-         configs=[("基座（完整prompt）", "runs/e0_full.jsonl"), ("LoRA 微调", "runs/e2.jsonl")]),
+         desc="同一基座 Qwen3.5-4B，四种用法横向对比：不给示例 / 给 16 条 / 给 32 条 / 把示例训进权重。"
+              "prompt 与示例来源完全一致，唯一变量是示例放在上下文里还是放在权重里。",
+         configs=[("基座 0-shot", "runs/e0_full.jsonl"),
+                  ("基座 +16示例", "runs/e0_full_s16.jsonl"),
+                  ("基座 +32示例", "runs/e0_full_s32.jsonl"),
+                  ("LoRA 微调", "runs/e2.jsonl")]),
     dict(slug="round3_duee", domain="duee_fin",
          title="第三轮 · 本地微调：DuEE-fin（中文金融公告）",
          desc="事件抽取，schema 是 22 字段的并集，单个事件只填其中一类。",
@@ -114,11 +123,13 @@ th{background:#f8f9fa;font-weight:600}
 td.n{font-family:ui-monospace,monospace}
 tr.hl td{background:#ebfbee}
 .c{border:1px solid #e9ecef;border-radius:9px;margin-bottom:9px;overflow:hidden}
-.ch{padding:9px 12px;cursor:pointer;display:grid;gap:6px;align-items:center}
+.ch{padding:9px 12px;cursor:pointer;display:grid;gap:6px;align-items:center;
+ grid-template-columns:var(--gcols)}
 .ch:hover{background:#f8f9fa}
 .q{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
 /* 列头：与卡片标题同一套 grid，列宽由 --cols 决定 */
 .chead{position:sticky;top:46px;z-index:8;background:#fff;display:grid;gap:6px;
+ grid-template-columns:var(--gcols);
  padding:7px 12px;margin:0 0 7px;border:1px solid #e9ecef;border-radius:9px;
  font-size:11px;color:#868e96;letter-spacing:.03em;align-items:end}
 .chead .cn{font-weight:600;color:#495057;line-height:1.25;word-break:break-word}
@@ -145,6 +156,14 @@ button .n{opacity:.55;margin-left:5px;font-size:11px}
 input[type=search]{font:13px inherit;padding:5px 10px;border:1px solid #ced4da;border-radius:6px;
  min-width:200px;background:#fff;color:inherit}
 .hit{color:#868e96;font-size:12px;margin:0 0 10px}
+.bar2{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:0 0 10px;
+ padding:8px 10px;background:#f8f9fa;border-radius:8px}
+.bar2 .lbl{font-size:11.5px;color:#868e96;margin-right:2px}
+.colbtn{font:12.5px inherit;padding:4px 9px;border:1px solid #ced4da;background:#fff;
+ border-radius:6px;cursor:pointer}
+.colbtn.on{background:#1c7ed6;color:#fff;border-color:#1c7ed6}
+.colbtn .n{margin-left:5px;font-size:10.5px;opacity:.6}
+.bar2 .sep{width:1px;height:16px;background:#dee2e6;margin:0 4px}
 .sep{width:1px;height:20px;background:#dee2e6;margin:0 3px}
 .cfg{display:grid;grid-template-columns:130px 1fr;gap:8px;align-items:start;margin-top:7px}
 .cfgname{font-size:12px;font-weight:600;padding-top:7px}
@@ -170,6 +189,8 @@ input[type=search]{font:13px inherit;padding:5px 10px;border:1px solid #ced4da;b
  button.on{background:#e9ecef;color:#141414}
  input[type=search]{background:#1e1e1e;border-color:#495057}
  .card{border-color:#343a40} .note{background:#1e1e1e;border-color:#495057}
+ .bar2{background:#1e1e1e} .colbtn{background:#1e1e1e;color:#e9ecef;border-color:#495057}
+ .colbtn.on{background:#1c7ed6;color:#fff;border-color:#1c7ed6}
  .d.tp{background:#193d24;color:#8ce99a} .d.fp{background:#3d1a1a;color:#ffa8a8}
  .d.fn{background:#3d3312;color:#ffd43b} .sep{background:#343a40}}
 """
@@ -201,6 +222,32 @@ btns.forEach(b=>b.onclick=()=>{
   apply();
 });
 if(box) box.oninput=apply;
+
+// ---- 列筛选：按下标同时隐藏「列头 + 所有行」的单元格，并重算 grid ----
+const NCOL=+document.body.dataset.ncol, COLW=+document.body.dataset.colw;
+const heads=[...document.querySelectorAll('.chead .cn')];
+function showCols(keep){                       // keep: 下标 Set
+  heads.forEach(h=>{h.style.display = keep.has(+h.dataset.ci)?'':'none';});
+  document.querySelectorAll('.ch .f1').forEach(f=>{
+    f.style.display = keep.has(+f.dataset.ci)?'':'none';});
+  document.body.style.setProperty('--gcols',
+    `minmax(110px,1fr) 40px repeat(${keep.size},${COLW}px)`);
+}
+const colbtns=[...document.querySelectorAll('.colbtn')];
+colbtns.forEach(b=>b.onclick=()=>{
+  colbtns.forEach(x=>x.classList.toggle('on', x===b));
+  let keep;
+  if(b.dataset.all)        keep=new Set(heads.map(h=>+h.dataset.ci));
+  else if(b.dataset.shot)  keep=new Set(heads.filter(h=>h.dataset.shot===b.dataset.shot)
+                                             .map(h=>+h.dataset.ci));
+  else                     keep=new Set(heads.filter(h=>h.dataset.model===b.dataset.model)
+                                             .map(h=>+h.dataset.ci));
+  showCols(keep);
+});
+// 初始：有列筛选栏的页面默认只显示 16-shot，其余页面显示全部
+const on0=document.querySelector('.colbtn.on');
+if(on0) on0.click(); else showCols(new Set(heads.map(h=>+h.dataset.ci)));
+
 apply();
 """
 
@@ -285,7 +332,8 @@ def build_round(rd) -> dict:
         for n, path in rd["configs"]:
             for mo, sl in m["slug"].items():
                 for s in m["shots"]:
-                    if path.endswith(f"{sl}_s{s}.jsonl"):
+                    if (path.endswith(f"{sl}_s{s}.jsonl")
+                            or (s == 0 and path.endswith(f"{sl}.jsonl"))):
                         name_of[(mo, s)] = n
         head.append("<h2>梯度矩阵 · micro-F1（行=模型，列=示例条数）</h2>")
         head.append("<table><tr><th>模型</th>" +
@@ -407,18 +455,67 @@ def build_round(rd) -> dict:
             f'<div class="ch">{"".join(badges)}</div>'
             f'<div class="b">{"".join(body)}</div></div>')
 
-    # ---- 列头（与卡片标题共用同一套 grid）----
-    colw = 62 if len(names) > 8 else 76
-    grid = f"grid-template-columns:minmax(110px,1fr) 40px repeat({len(names)},{colw}px)"
-    chead = (f'<div class="chead" style="{grid}">'
-             f'<div>文档原文（点击展开）</div><div class="unit">#</div>'
-             + "".join(f'<div class="cn">{esc(n)}</div>' for n in names)
-             + '</div>')
-    # 让卡片标题用同一套 grid
-    cards = [c.replace('<div class="ch">', f'<div class="ch" style="{grid}">') for c in cards]
+    # ---- 列筛选（仅 matrix 轮次）：按示例数 / 按模型看梯度 ----
+    # 每列带 data-shot / data-model，JS 切换时同步隐藏单元格并重算 grid
+    colmeta = {}          # 配置名 -> (model, shot)
+    if rd.get("matrix"):
+        m = rd["matrix"]
+        for n, path in rd["configs"]:
+            for mo, sl in m["slug"].items():
+                for s in m["shots"]:
+                    if (path.endswith(f"{sl}_s{s}.jsonl")
+                            or (s == 0 and path.endswith(f"{sl}.jsonl"))):
+                        colmeta[n] = (mo, s)
 
+    colsel = ""
+    default_shot = 16 if colmeta else None
+    if colmeta:
+        m = rd["matrix"]
+        shots_avail = sorted({s for _, s in colmeta.values()})
+        ladder_models = [mo for mo in m["models"]
+                         if len({s for k, (mm, s) in colmeta.items() if mm == mo}) >= 3]
+        colsel = ('<div class="bar2"><span class="lbl">列：按示例数</span>'
+                  + "".join(f'<button class="colbtn{" on" if s == default_shot else ""}" '
+                            f'data-shot="{s}">{s}-shot'
+                            f'<span class="n">{sum(1 for _, x in colmeta.values() if x == s)}</span>'
+                            f'</button>' for s in shots_avail)
+                  + '<span class="sep"></span><span class="lbl">按模型看梯度</span>'
+                  + "".join(f'<button class="colbtn" data-model="{esc(mo)}">{esc(mo)}</button>'
+                            for mo in ladder_models)
+                  + '<span class="sep"></span>'
+                  + '<button class="colbtn" data-all="1">全部列</button></div>')
+
+    # ---- 列头（与卡片标题共用同一套 grid，宽度由 CSS 变量 --gcols 驱动）----
+    # 列用下标标识（data-ci），JS 按下标同时隐藏「列头 + 所有行」的对应单元格并重算 grid
+    colw = 62 if len(names) > 8 else 76
+
+    def attrs(idx, n):
+        a = f' data-ci="{idx}"'
+        if n in colmeta:
+            mo, s = colmeta[n]
+            a += f' data-shot="{s}" data-model="{esc(mo)}"'
+        return a
+
+    chead = ('<div class="chead">'
+             '<div>文档原文（点击展开）</div><div class="unit">#</div>'
+             + "".join(f'<div class="cn"{attrs(i, n)}>{esc(n)}</div>'
+                       for i, n in enumerate(names))
+             + '</div>')
+    # 给每行的 f1 单元格按顺序补上 data-ci
+    cards2 = []
+    for c in cards:
+        parts = c.split('<span class="f1')
+        rebuilt = parts[0]
+        for i, seg in enumerate(parts[1:]):
+            rebuilt += f'<span data-ci="{i}" class="f1' + seg
+        cards2.append(rebuilt)
+    cards = cards2
+
+    init_n = sum(1 for n in names if (not colmeta) or colmeta.get(n, (None, None))[1] == default_shot)
     page = (f'<!doctype html><meta charset=utf-8><title>{esc(rd["title"])}</title>'
             f'<style>{CSS}</style>'
+            f'<body data-ncol="{len(names)}" data-colw="{colw}" '
+            f'style="--gcols:minmax(110px,1fr) 40px repeat({init_n},{colw}px)">'
             f'<a class="back" href="index.html">← 返回评测目录</a>'
             f'<h1>{esc(rd["title"])}</h1>'
             f'<div class="sub">{esc(rd["desc"])}　·　{len(keep)} 条（已去泄漏）</div>'
@@ -433,7 +530,7 @@ def build_round(rd) -> dict:
             f'点行展开看输入原文、GOLD、各配置输出，以及差异逐项拆解——'
             f'<span class="d fp">红=多抽/抽错(FP)</span> '
             f'<span class="d fn">黄=漏抽(FN)</span>，格式 <code>字段=归一化值</code>。</div>'
-            f'{"".join(bar)}{chead}{"".join(cards)}'
+            f'{"".join(bar)}{colsel}{chead}{"".join(cards)}'
             f'<script>{JS}</script>')
     return dict(html=page, aggs=aggs, names=names, n=len(keep))
 
@@ -468,8 +565,20 @@ def build_index(built):
     c3 = built["round3_cord"]["aggs"]
     ladder = [("API 裸跑最佳（Qwen3.7-Max）", c1["Qwen3.7-Max"]),
               ("API few-shot 最佳（Gemini 32-shot）", c2["Gemini 32"]),
-              ("本地基座（完整 prompt，未微调）", c1["本地基座 4B"]),
+              ("本地基座 4B（零示例）", c1["本地基座 4B"]),
+              ("本地基座 4B + 32 示例", c3["基座 +32示例"]),
               ("本地 LoRA 微调", c3["LoRA 微调"])]
+
+    # 同一个 4B 的四种用法：示例进上下文 vs 进权重
+    abl = [("哪也没放（0-shot）", c3["基座 0-shot"], "0"),
+           ("上下文里（16 条）", c3["基座 +16示例"], "4,775 tok / 每次请求"),
+           ("上下文里（32 条）", c3["基座 +32示例"], "8,245 tok / 每次请求"),
+           ("权重里（LoRA）", c3["LoRA 微调"], "0 · 训练是一次性成本")]
+    abl_rows = "".join(
+        f'<tr{" class=hl" if "权重" in n else ""}><td>{esc(n)}</td>'
+        f'<td class="n"><b>{a["micro"]:.3f}</b></td><td class="n">{a["schema"]:.0%}</td>'
+        f'<td class="n">{a["perfect"]:.0%}</td><td>{esc(cost)}</td></tr>'
+        for n, a, cost in abl)
     ladder_rows = "".join(
         f'<tr{" class=hl" if "LoRA" in n else ""}><td>{esc(n)}</td>'
         f'<td class="n">{a["P"]:.3f}</td><td class="n">{a["R"]:.3f}</td>'
@@ -489,6 +598,14 @@ def build_index(built):
             f'<div class="note">零示例时本地微调领先约 <b>8.5 个点</b>；给 API 补足示例后差距收敛到 '
             f'<b>1.8 个点</b>，而 API 自身重跑波动就有 <b>±1.4 个点</b>——'
             f'精度已不再是选型理由，剩下的是合规、延迟、成本结构与输出确定性。</div>'
+
+            f'<h2>同一个 4B：示例进上下文，还是进权重</h2>'
+            f'<table><tr><th>示例放在……</th><th>micro-F1</th><th>schema</th><th>完美率</th>'
+            f'<th>每次推理的示例开销</th></tr>{abl_rows}</table>'
+            f'<div class="note">同一个 Qwen3.5-4B、同一份 prompt、同一批示例（同一训练文件、同一套去污染），'
+            f'唯一的变量是示例放在哪里。<b>进权重比进上下文高 6.9 个点，完美率高一倍</b>，'
+            f'而且 LoRA 推理时的上下文长度与零示例相同——'
+            f'32-shot 那一档，输入里 96.6% 的 token 花在示例上，要抽的文档只占 0.9%。</div>'
 
             f'<h2>各轮入口</h2>{cards}'
 

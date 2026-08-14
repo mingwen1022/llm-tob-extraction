@@ -48,6 +48,13 @@ def main():
     ap.add_argument("--constrained", action="store_true", help="JSON-Schema constrained decoding")
     ap.add_argument("--max-new-tokens", type=int, default=512)
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--full-prompt", action="store_true",
+                    help="用完整 prompt(字段说明+类型要求)覆盖 eval 文件里存的 system")
+    ap.add_argument("--shots", type=int, default=0,
+                    help="in-context 示例条数。与 run_api.py --shots 同一套取法与污染核查，"
+                         "以便「基座+示例」和「API+示例」严格可比")
+    ap.add_argument("--shot-file", default=None,
+                    help="few-shot 示例来源，默认取同域训练集")
     args = ap.parse_args()
 
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")  # GDN/新算子回退CPU
@@ -89,6 +96,32 @@ def main():
     rows = load_eval(args.eval_file, args.limit)
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
 
+    override_system = None
+    if args.full_prompt:
+        from shared.schema import build_system_prompt
+        override_system = build_system_prompt(args.domain, rich=True, types=True)
+
+    # ---- few-shot：与 run_api.py 完全同一套取法 ----
+    # 取「前 N 条干净的」：训练集里可能混着测试集原文（CORD 官方 split 自带跨 split 重复），
+    # 直接取前 N 条会把测试题当示例喂进去。跳过污染项继续往后取，确定且可复现。
+    shot_msgs = []
+    if args.shots > 0:
+        shot_file = args.shot_file or args.eval_file.replace("test.eval", "train.eval")
+        pool = load_eval(shot_file)
+        test_texts = {r["user"] for r in rows}
+        clean = [s for s in pool if s["user"] not in test_texts]
+        n_skipped = len(pool) - len(clean)
+        shot_rows = clean[: args.shots]
+        if len(shot_rows) < args.shots:
+            sys.exit(f"--shot-file 去污染后只剩 {len(clean)} 条，不足 {args.shots} 条")
+        if n_skipped:
+            print(f"[few-shot] 跳过 {n_skipped} 条与测试集重叠的样本")
+        for s in shot_rows:
+            shot_msgs.append({"role": "user", "content": s["user"]})
+            shot_msgs.append({"role": "assistant",
+                              "content": json.dumps(s["gt"], ensure_ascii=False)})
+        print(f"[few-shot] {args.shots} 条示例 <- {shot_file}（已核查与测试集零重叠）")
+
     # constrained generator (built once)
     gen_json = None
     if args.constrained:
@@ -100,7 +133,8 @@ def main():
     with open(args.out, "w") as fout:
         for i, r in enumerate(rows):
             messages = [
-                {"role": "system", "content": r["system"]},
+                {"role": "system", "content": override_system or r["system"]},
+                *shot_msgs,
                 {"role": "user", "content": r["user"]},
             ]
             try:
@@ -119,6 +153,7 @@ def main():
                 output = tok.decode(out[0][inputs["input_ids"].shape[1]:],
                                     skip_special_tokens=True)
             fout.write(json.dumps({"output": output}, ensure_ascii=False) + "\n")
+            fout.flush()          # 长任务要能实时看进度/断点续跑
             if (i + 1) % 10 == 0:
                 print(f"  {i+1}/{len(rows)}")
 
