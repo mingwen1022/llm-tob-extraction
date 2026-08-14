@@ -16,3 +16,4 @@ runs/*.jsonl
 runs/fewshot/
 runs/*.log
 runs/latency_bench/
+doc/eval/*.html
