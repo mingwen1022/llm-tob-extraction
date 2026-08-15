@@ -570,9 +570,7 @@ def build_index(built):
             f'<table><tr><th>方案</th><th>Precision</th><th>Recall</th><th>micro-F1</th>'
             f'<th>macro·按文档</th><th>完美率</th></tr>{ladder_rows}</table>'
             f'<h2>各轮入口</h2>{cards}'
-            f'<div class="note">⚠ 第一、二轮只在 <b>CORD</b> 上做，第三轮才是三个域。'
-            f'跨域的数字不要混着读——三个域的字段结构、条数、难度都不同，'
-            f'详见报告 §3.3「为什么不给三域合并总分」。</div>')
+)
 
 
 def main():
