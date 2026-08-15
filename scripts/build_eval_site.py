@@ -38,7 +38,7 @@ DOMAIN_GOLD = {
 # 每轮：标题、说明、该轮包含哪些配置（展示名 -> 预测文件）
 ROUNDS = [
     dict(slug="round1_api_zeroshot", domain="cord",
-         title="第一轮 · API 裸跑（零示例）",
+         title="第一轮 · API 裸跑（零示例）· CORD 英文收据",
          desc="六个前沿/国产旗舰，完整 prompt，不给任何示例。同一批 CORD 干净 92 条。",
          configs=[
              ("Qwen3.7-Max",      "runs/fewshot/Qwen_Qwen3_7-Max_s0.jsonl"),
@@ -50,7 +50,7 @@ ROUNDS = [
              ("本地基座 4B",       "runs/e0_full.jsonl"),
          ]),
     dict(slug="round2_api_fewshot", domain="cord",
-         title="第二轮 · API 补足示例（few-shot）",
+         title="第二轮 · API 补足示例（few-shot）· CORD 英文收据",
          desc="给 API 补上 in-context 示例后重测。Gemini 与 MiniMax 跑满 0/4/8/16/32/64 六档，"
               "其余四家跑 0 与 16 两档。本地基座 4B 也跑了 0/16/32 三档——"
               "同一个 4B、同一批示例、同一个 prompt，与第三轮的 LoRA 只差「示例进上下文还是进权重」。",
@@ -92,7 +92,7 @@ ROUNDS = [
              ("本地基座 32", "runs/e0_full_s32.jsonl"),
          ]),
     dict(slug="round3_cord", domain="cord",
-         title="第三轮 · 本地微调：CORD（英文收据）",
+         title="第三轮 · 本地微调（LoRA）· CORD 英文收据",
          desc="同一基座 Qwen3.5-4B，四种用法横向对比：不给示例 / 给 16 条 / 给 32 条 / 把示例训进权重。"
               "prompt 与示例来源完全一致，唯一变量是示例放在上下文里还是放在权重里。",
          configs=[("基座 0-shot", "runs/e0_full.jsonl"),
@@ -100,11 +100,11 @@ ROUNDS = [
                   ("基座 +32示例", "runs/e0_full_s32.jsonl"),
                   ("LoRA 微调", "runs/e2.jsonl")]),
     dict(slug="round3_duee", domain="duee_fin",
-         title="第三轮 · 本地微调：DuEE-fin（中文金融公告）",
+         title="第三轮 · 本地微调（LoRA）· DuEE-fin 中文金融公告",
          desc="事件抽取，schema 是 22 字段的并集，单个事件只填其中一类。",
          configs=[("基座", "runs/duee_e0.jsonl"), ("LoRA 微调", "runs/duee_e2.jsonl")]),
     dict(slug="round3_ccks", domain="ccks_fraud",
-         title="第三轮 · 本地微调：CCKS-fraud（中文反欺诈）",
+         title="第三轮 · 本地微调（LoRA）· CCKS-fraud 中文反欺诈",
          desc="社交媒体吐槽体文本，噪声远高于规范文档。",
          configs=[("基座", "runs/ccks_e0.jsonl"), ("LoRA 微调", "runs/ccks_e2.jsonl")]),
 ]
@@ -543,15 +543,6 @@ def build_index(built):
         f'最佳 {esc(best_name)} · micro-F1 <b>{a["micro"]:.3f}</b></div></a>'
         for rd, b, best_name, a in rows)
 
-    # 跨轮对比表：每轮取其最佳配置
-    cmp_rows = "".join(
-        f'<tr><td><a href="{rd["slug"]}.html">{esc(rd["title"])}</a></td>'
-        f'<td>{esc(best_name)}</td><td class="n">{a["P"]:.3f}</td><td class="n">{a["R"]:.3f}</td>'
-        f'<td class="n"><b>{a["micro"]:.3f}</b></td><td class="n">{a["docmacro"]:.3f}</td>'
-        f'<td class="n">{a["perfect"]:.0%}</td>'
-        f'<td class="n">{a["zero"]:.0%}</td></tr>'
-        for rd, b, best_name, a in rows)
-
     # CORD 三轮纵向对比（同一批 92 条，可比）
     c1 = built["round1_api_zeroshot"]["aggs"]
     c2 = built["round2_api_fewshot"]["aggs"]
@@ -579,10 +570,6 @@ def build_index(built):
             f'<table><tr><th>方案</th><th>Precision</th><th>Recall</th><th>micro-F1</th>'
             f'<th>macro·按文档</th><th>完美率</th></tr>{ladder_rows}</table>'
             f'<h2>各轮入口</h2>{cards}'
-
-            f'<h2>各轮最佳配置一览</h2>'
-            f'<table><tr><th>轮次</th><th>最佳配置</th><th>P</th><th>R</th><th>micro-F1</th>'
-            f'<th>macro·按文档</th><th>完美率</th><th>全错率</th></tr>{cmp_rows}</table>'
             f'<div class="note">⚠ 第一、二轮只在 <b>CORD</b> 上做，第三轮才是三个域。'
             f'跨域的数字不要混着读——三个域的字段结构、条数、难度都不同，'
             f'详见报告 §3.3「为什么不给三域合并总分」。</div>')
