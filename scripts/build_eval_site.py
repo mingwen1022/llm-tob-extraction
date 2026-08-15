@@ -95,6 +95,7 @@ ROUNDS = [
          title="第三轮 · 本地微调（LoRA）· CORD 英文收据",
          desc="同一基座 Qwen3.5-4B，四种用法横向对比：不给示例 / 给 16 条 / 给 32 条 / 把示例训进权重。"
               "prompt 与示例来源完全一致，唯一变量是示例放在上下文里还是放在权重里。",
+         baseline="基座 0-shot",
          configs=[("基座 0-shot", "runs/e0_full.jsonl"),
                   ("基座 +16示例", "runs/e0_full_s16.jsonl"),
                   ("基座 +32示例", "runs/e0_full_s32.jsonl"),
@@ -102,10 +103,12 @@ ROUNDS = [
     dict(slug="round3_duee", domain="duee_fin",
          title="第三轮 · 本地微调（LoRA）· DuEE-fin 中文金融公告",
          desc="事件抽取，schema 是 22 字段的并集，单个事件只填其中一类。",
+         baseline="基座",
          configs=[("基座", "runs/duee_e0.jsonl"), ("LoRA 微调", "runs/duee_e2.jsonl")]),
     dict(slug="round3_ccks", domain="ccks_fraud",
          title="第三轮 · 本地微调（LoRA）· CCKS-fraud 中文反欺诈",
          desc="社交媒体吐槽体文本，噪声远高于规范文档。",
+         baseline="基座",
          configs=[("基座", "runs/ccks_e0.jsonl"), ("LoRA 微调", "runs/ccks_e2.jsonl")]),
 ]
 
@@ -156,6 +159,8 @@ button .n{opacity:.55;margin-left:5px;font-size:11px}
 input[type=search]{font:13px inherit;padding:5px 10px;border:1px solid #ced4da;border-radius:6px;
  min-width:200px;background:#fff;color:inherit}
 .hit{color:#868e96;font-size:12px;margin:0 0 10px}
+.arrow{color:#adb5bd;margin:0 7px}
+.gain{margin-left:7px;padding:1px 6px;border-radius:99px;background:#d3f9d8;color:#2b8a3e;font-size:11.5px}
 .bar2{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:0 0 10px;
  padding:8px 10px;background:#f8f9fa;border-radius:8px}
 .bar2 .lbl{font-size:11.5px;color:#868e96;margin-right:2px}
@@ -293,7 +298,18 @@ def agg(stats):
     r = TP / (TP + FN) if TP + FN else 0.0
     f1 = 2 * TP / (2 * TP + FP + FN) if (2 * TP + FP + FN) else 0.0
     docf1 = [s["f1"] for s in stats]
+    # 字段维度：按字段路径把全部文档的 TP/FP/FN 汇总，每字段先算 F1 再对字段数取平均。
+    # 与文档维度是同一批 TP/FP/FN 换个分桶方式——每字段一票，不管它出现 10 次还是 230 次。
+    byf = {}
+    for st in stats:
+        for key, items in (("tp", st["tp_items"]), ("fp", st["fp_items"]), ("fn", st["fn_items"])):
+            for k, _ in items:
+                byf.setdefault(k, {"tp": 0, "fp": 0, "fn": 0})[key] += 1
+    fieldf1 = [2 * b["tp"] / (2 * b["tp"] + b["fp"] + b["fn"])
+               for b in byf.values() if 2 * b["tp"] + b["fp"] + b["fn"]]
     return dict(P=p, R=r, micro=f1,
+                fieldmacro=statistics.mean(fieldf1) if fieldf1 else 0.0,
+                nfield=len(byf),
                 docmacro=statistics.mean(docf1),
                 schema=sum(1 for s in stats if s["status"] == "valid") / len(stats),
                 perfect=sum(1 for s in docf1 if s >= 0.999) / len(docf1),
@@ -384,14 +400,16 @@ def build_round(rd) -> dict:
         head.append("<h2>各配置完整指标</h2>")
 
     head.append("<table><tr><th>配置</th><th>Precision</th><th>Recall</th><th>micro-F1</th>"
-                "<th>macro-F1（文档维度）</th><th>完美率</th><th>全错率</th></tr>")
+                "<th>macro-F1（字段维度）</th><th>macro-F1（文档维度）</th>"
+                "<th>完美率</th><th>全错率</th></tr>")
     for n in names:
         a = aggs[n]
         hl = ' class="hl"' if a["micro"] == best else ""
         head.append(
             f'<tr{hl}><td>{esc(full_name(n))}</td><td class="n">{a["P"]:.3f}</td>'
             f'<td class="n">{a["R"]:.3f}</td>'
-            f'<td class="n"><b>{a["micro"]:.3f}</b></td><td class="n">{a["docmacro"]:.3f}</td>'
+            f'<td class="n"><b>{a["micro"]:.3f}</b></td>'
+            f'<td class="n">{a["fieldmacro"]:.3f}</td><td class="n">{a["docmacro"]:.3f}</td>'
             f'<td class="n">{a["perfect"]:.0%}</td>'
             f'<td class="n">{a["zero"]:.0%}</td></tr>')
     head.append("</table>")
@@ -536,11 +554,22 @@ def build_index(built):
         a = b["aggs"][best_name]
         rows.append((rd, b, best_name, a))
 
+    def card_score(rd, b, best_name, a):
+        """微调轮给「微调前 → 微调后」，API 轮只有最佳配置可报。"""
+        base = rd.get("baseline")
+        if base and base in b["aggs"]:
+            bm = b["aggs"][base]["micro"]
+            return (f'微调前 {esc(base)} · <b>{bm:.3f}</b>'
+                    f'<span class="arrow">→</span>'
+                    f'微调后 {esc(best_name)} · <b>{a["micro"]:.3f}</b>'
+                    f'<span class="gain">+{a["micro"]-bm:.3f}</span>')
+        return f'最佳 {esc(best_name)} · micro-F1 <b>{a["micro"]:.3f}</b>'
+
     cards = "".join(
         f'<a class="card" href="{rd["slug"]}.html"><div class="t">{esc(rd["title"])}</div>'
         f'<div class="d2">{esc(rd["desc"][:60])}…</div>'
         f'<div class="m">{b["n"]} 条 · {len(b["names"])} 个配置<br>'
-        f'最佳 {esc(best_name)} · micro-F1 <b>{a["micro"]:.3f}</b></div></a>'
+        f'{card_score(rd, b, best_name, a)}</div></a>'
         for rd, b, best_name, a in rows)
 
     # CORD 三轮纵向对比（同一批 92 条，可比）
@@ -556,8 +585,9 @@ def build_index(built):
     ladder_rows = "".join(
         f'<tr{" class=hl" if "LoRA" in n else ""}><td>{esc(n)}</td>'
         f'<td class="n">{a["P"]:.3f}</td><td class="n">{a["R"]:.3f}</td>'
-        f'<td class="n"><b>{a["micro"]:.3f}</b></td><td class="n">{a["docmacro"]:.3f}</td>'
-        f'<td class="n">{a["perfect"]:.0%}</td></tr>'
+        f'<td class="n"><b>{a["micro"]:.3f}</b></td>'
+        f'<td class="n">{a["fieldmacro"]:.3f}</td><td class="n">{a["docmacro"]:.3f}</td>'
+        f'<td class="n">{a["perfect"]:.0%}</td><td class="n">{a["zero"]:.0%}</td></tr>'
         for n, a in ladder)
 
     return (f'<!doctype html><meta charset=utf-8><title>评测明细 · 通用大模型 API vs 本地微调</title>'
@@ -568,7 +598,8 @@ def build_index(built):
 
             f'<h2>CORD 三轮纵向对比（同一批干净 92 条，可直接比）</h2>'
             f'<table><tr><th>方案</th><th>Precision</th><th>Recall</th><th>micro-F1</th>'
-            f'<th>macro-F1（文档维度）</th><th>完美率</th></tr>{ladder_rows}</table>'
+            f'<th>macro-F1（字段维度）</th><th>macro-F1（文档维度）</th>'
+            f'<th>完美率</th><th>全错率</th></tr>{ladder_rows}</table>'
             f'<h2>各轮入口</h2>{cards}'
 )
 
