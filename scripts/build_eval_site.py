@@ -57,7 +57,7 @@ ROUNDS = [
          # 用「模型 × shots」表达，页面会自动生成梯度矩阵
          matrix=dict(
              models=["Gemini-3.5-Flash", "MiniMax-M3", "Kimi-K3", "GLM-5.2",
-                     "Qwen3.7-Max", "DeepSeek-V4-Pro", "本地基座4B"],
+                     "Qwen3.7-Max", "DeepSeek-V4-Pro", "本地基座 Qwen3.5-4B"],
              shots=[0, 4, 8, 16, 32, 64],
              slug={"Gemini-3.5-Flash": "google_gemini-3_5-flash",
                    "MiniMax-M3": "MiniMaxAI_MiniMax-M3",
@@ -65,7 +65,7 @@ ROUNDS = [
                    "GLM-5.2": "zai-org_GLM-5_2-FP8",
                    "Qwen3.7-Max": "Qwen_Qwen3_7-Max",
                    "DeepSeek-V4-Pro": "deepseek-ai_DeepSeek-V4-Pro",
-                   "本地基座4B": "e0_full"}),
+                   "本地基座 Qwen3.5-4B": "e0_full"}),
          configs=[
              ("Gemini 0",  "runs/fewshot/google_gemini-3_5-flash_s0.jsonl"),
              ("Gemini 4",  "runs/fewshot/google_gemini-3_5-flash_s4.jsonl"),
@@ -314,6 +314,24 @@ def build_round(rd) -> dict:
     model = get_model(domain)
     names = [n for n, _ in rd["configs"]]
 
+    # 配置名 -> (模型全名, shots)。列头受 62px 宽度限制只能用短名（"Gemini 16"），
+    # 但聚合表是普通表格，用全名（"Gemini-3.5-Flash · 16-shot"）更好读。
+    colmeta = {}
+    if rd.get("matrix"):
+        m = rd["matrix"]
+        for n, path in rd["configs"]:
+            for mo, sl in m["slug"].items():
+                for sh in m["shots"]:
+                    if (path.endswith(f"{sl}_s{sh}.jsonl")
+                            or (sh == 0 and path.endswith(f"{sl}.jsonl"))):
+                        colmeta[n] = (mo, sh)
+
+    def full_name(n):
+        if n not in colmeta:
+            return n
+        mo, sh = colmeta[n]
+        return f"{mo} · {sh}-shot" if sh else f"{mo} · 零示例"
+
     # 逐配置跑一遍
     results = {}
     for name, path in rd["configs"]:
@@ -366,14 +384,15 @@ def build_round(rd) -> dict:
         head.append("<h2>各配置完整指标</h2>")
 
     head.append("<table><tr><th>配置</th><th>Precision</th><th>Recall</th><th>micro-F1</th>"
-                "<th>macro·按文档</th><th>schema 合法率</th><th>完美率</th><th>全错率</th></tr>")
+                "<th>macro·按文档</th><th>完美率</th><th>全错率</th></tr>")
     for n in names:
         a = aggs[n]
         hl = ' class="hl"' if a["micro"] == best else ""
         head.append(
-            f'<tr{hl}><td>{esc(n)}</td><td class="n">{a["P"]:.3f}</td><td class="n">{a["R"]:.3f}</td>'
+            f'<tr{hl}><td>{esc(full_name(n))}</td><td class="n">{a["P"]:.3f}</td>'
+            f'<td class="n">{a["R"]:.3f}</td>'
             f'<td class="n"><b>{a["micro"]:.3f}</b></td><td class="n">{a["docmacro"]:.3f}</td>'
-            f'<td class="n">{a["schema"]:.0%}</td><td class="n">{a["perfect"]:.0%}</td>'
+            f'<td class="n">{a["perfect"]:.0%}</td>'
             f'<td class="n">{a["zero"]:.0%}</td></tr>')
     head.append("</table>")
 
@@ -381,24 +400,11 @@ def build_round(rd) -> dict:
     main = names[-1]
     n_bad     = sum(1 for s in results[main] if s["f1"] < 0.999)
     n_zero    = sum(1 for s in results[main] if s["f1"] <= 0.001)
-    n_schema  = sum(1 for s in results[main] if s["status"] != "valid")
     n_perfect = sum(1 for s in results[main] if s["f1"] >= 0.999)
-    n_improve = 0
-    if len(names) >= 2:
-        n_improve = sum(1 for a, b in zip(results[names[0]], results[main]) if b["f1"] - a["f1"] > 0.01)
-    n_regress = 0
-    if len(names) >= 2:
-        n_regress = sum(1 for a, b in zip(results[names[0]], results[main]) if a["f1"] - b["f1"] > 0.01)
-
     bar = [f'<div class="bar"><button class="on" data-f="all">全部<span class="n">{len(keep)}</span></button>',
            f'<button data-f="bad">「{esc(main)}」未满分<span class="n">{n_bad}</span></button>',
            f'<button data-f="zero">「{esc(main)}」F1=0<span class="n">{n_zero}</span></button>',
-           f'<button data-f="schemafail">schema 不合法<span class="n">{n_schema}</span></button>',
            f'<button data-f="perfect">完美 (F1=1)<span class="n">{n_perfect}</span></button>']
-    if len(names) >= 2:
-        bar.append('<span class="sep"></span>')
-        bar.append(f'<button data-f="improve">末配置优于首配置<span class="n">{n_improve}</span></button>')
-        bar.append(f'<button data-f="regress">末配置劣于首配置<span class="n">{n_regress}</span></button>')
     bar.append('<input type="search" id="q" placeholder="搜原文 / 输出 / 字段…">')
     bar.append('</div><div class="hit" id="hit"></div>')
 
@@ -410,12 +416,7 @@ def build_round(rd) -> dict:
         tags = []
         if s_main["f1"] < 0.999: tags.append("bad")
         if s_main["f1"] <= 0.001: tags.append("zero")
-        if s_main["status"] != "valid": tags.append("schemafail")
         if s_main["f1"] >= 0.999: tags.append("perfect")
-        if len(names) >= 2:
-            d = s_main["f1"] - results[names[0]][pos]["f1"]
-            if d > 0.01: tags.append("improve")
-            if d < -0.01: tags.append("regress")
 
         searchable = g["user"][:400] + " " + json.dumps(g["gt"], ensure_ascii=False)[:400] + \
                      " " + str(s_main["raw"])[:400]
@@ -445,10 +446,12 @@ def build_round(rd) -> dict:
                 f'<span class="d tp">TP {s["tp"]}</span>'
                 f'<span class="d fp">FP {s["fp"]}</span>'
                 f'<span class="d fn">FN {s["fn"]}</span>'
-                f'<span class="d">schema {"✓" if s["status"]=="valid" else "✗ "+s["status"]}</span>'
-                f'<span class="d">{tok}</span></div>'
-                f'<div class="diff">{diff_html(s["fp_items"],"fp")}{diff_html(s["fn_items"],"fn")}</div>'
-                f'</div></div>')
+                # 只提示真正影响打分的那一类：抠不出 JSON → 预测集为空 → F1 必为 0。
+                # schema 不合法（类型不符）照常参与打分，不值得在卡片上单列。
+                + (f'<span class="d fp">JSON 解析失败</span>' if s["status"] == "parse_fail" else "")
+                + f'<span class="d">{tok}</span></div>'
+                  f'<div class="diff">{diff_html(s["fp_items"],"fp")}{diff_html(s["fn_items"],"fn")}</div>'
+                  f'</div></div>')
 
         cards.append(
             f'<div class="c" data-tags="{",".join(tags)}" data-text="{esc(searchable)}">'
@@ -457,16 +460,6 @@ def build_round(rd) -> dict:
 
     # ---- 列筛选（仅 matrix 轮次）：按示例数 / 按模型看梯度 ----
     # 每列带 data-shot / data-model，JS 切换时同步隐藏单元格并重算 grid
-    colmeta = {}          # 配置名 -> (model, shot)
-    if rd.get("matrix"):
-        m = rd["matrix"]
-        for n, path in rd["configs"]:
-            for mo, sl in m["slug"].items():
-                for s in m["shots"]:
-                    if (path.endswith(f"{sl}_s{s}.jsonl")
-                            or (s == 0 and path.endswith(f"{sl}.jsonl"))):
-                        colmeta[n] = (mo, s)
-
     colsel = ""
     default_shot = 16 if colmeta else None
     if colmeta:
@@ -555,7 +548,7 @@ def build_index(built):
         f'<tr><td><a href="{rd["slug"]}.html">{esc(rd["title"])}</a></td>'
         f'<td>{esc(best_name)}</td><td class="n">{a["P"]:.3f}</td><td class="n">{a["R"]:.3f}</td>'
         f'<td class="n"><b>{a["micro"]:.3f}</b></td><td class="n">{a["docmacro"]:.3f}</td>'
-        f'<td class="n">{a["schema"]:.0%}</td><td class="n">{a["perfect"]:.0%}</td>'
+        f'<td class="n">{a["perfect"]:.0%}</td>'
         f'<td class="n">{a["zero"]:.0%}</td></tr>'
         for rd, b, best_name, a in rows)
 
@@ -569,21 +562,11 @@ def build_index(built):
               ("本地基座 4B + 32 示例", c3["基座 +32示例"]),
               ("本地 LoRA 微调", c3["LoRA 微调"])]
 
-    # 同一个 4B 的四种用法：示例进上下文 vs 进权重
-    abl = [("哪也没放（0-shot）", c3["基座 0-shot"], "0"),
-           ("上下文里（16 条）", c3["基座 +16示例"], "4,775 tok / 每次请求"),
-           ("上下文里（32 条）", c3["基座 +32示例"], "8,245 tok / 每次请求"),
-           ("权重里（LoRA）", c3["LoRA 微调"], "0 · 训练是一次性成本")]
-    abl_rows = "".join(
-        f'<tr{" class=hl" if "权重" in n else ""}><td>{esc(n)}</td>'
-        f'<td class="n"><b>{a["micro"]:.3f}</b></td><td class="n">{a["schema"]:.0%}</td>'
-        f'<td class="n">{a["perfect"]:.0%}</td><td>{esc(cost)}</td></tr>'
-        for n, a, cost in abl)
     ladder_rows = "".join(
         f'<tr{" class=hl" if "LoRA" in n else ""}><td>{esc(n)}</td>'
         f'<td class="n">{a["P"]:.3f}</td><td class="n">{a["R"]:.3f}</td>'
         f'<td class="n"><b>{a["micro"]:.3f}</b></td><td class="n">{a["docmacro"]:.3f}</td>'
-        f'<td class="n">{a["schema"]:.0%}</td><td class="n">{a["perfect"]:.0%}</td></tr>'
+        f'<td class="n">{a["perfect"]:.0%}</td></tr>'
         for n, a in ladder)
 
     return (f'<!doctype html><meta charset=utf-8><title>评测明细 · 通用大模型 API vs 本地微调</title>'
@@ -594,26 +577,14 @@ def build_index(built):
 
             f'<h2>CORD 三轮纵向对比（同一批干净 92 条，可直接比）</h2>'
             f'<table><tr><th>方案</th><th>Precision</th><th>Recall</th><th>micro-F1</th>'
-            f'<th>macro·按文档</th><th>schema</th><th>完美率</th></tr>{ladder_rows}</table>'
-            f'<div class="note">零示例时本地微调领先约 <b>8.5 个点</b>；给 API 补足示例后差距收敛到 '
-            f'<b>1.8 个点</b>，而 API 自身重跑波动就有 <b>±1.4 个点</b>——'
-            f'精度已不再是选型理由，剩下的是合规、延迟、成本结构与输出确定性。</div>'
-
-            f'<h2>同一个 4B：示例进上下文，还是进权重</h2>'
-            f'<table><tr><th>示例放在……</th><th>micro-F1</th><th>schema</th><th>完美率</th>'
-            f'<th>每次推理的示例开销</th></tr>{abl_rows}</table>'
-            f'<div class="note">同一个 Qwen3.5-4B、同一份 prompt、同一批示例（同一训练文件、同一套去污染），'
-            f'唯一的变量是示例放在哪里。<b>进权重比进上下文高 6.9 个点，完美率高一倍</b>，'
-            f'而且 LoRA 推理时的上下文长度与零示例相同——'
-            f'32-shot 那一档，输入里 96.6% 的 token 花在示例上，要抽的文档只占 0.9%。</div>'
-
+            f'<th>macro·按文档</th><th>完美率</th></tr>{ladder_rows}</table>'
             f'<h2>各轮入口</h2>{cards}'
 
             f'<h2>各轮最佳配置一览</h2>'
             f'<table><tr><th>轮次</th><th>最佳配置</th><th>P</th><th>R</th><th>micro-F1</th>'
-            f'<th>macro·按文档</th><th>schema</th><th>完美率</th><th>全错率</th></tr>{cmp_rows}</table>'
+            f'<th>macro·按文档</th><th>完美率</th><th>全错率</th></tr>{cmp_rows}</table>'
             f'<div class="note">⚠ 第一、二轮只在 <b>CORD</b> 上做，第三轮才是三个域。'
-            f'跨域的数字不要混着读——三个域的 schema、条数、难度都不同，'
+            f'跨域的数字不要混着读——三个域的字段结构、条数、难度都不同，'
             f'详见报告 §3.3「为什么不给三域合并总分」。</div>')
 
 
