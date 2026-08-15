@@ -384,7 +384,7 @@ def build_round(rd) -> dict:
         head.append("<h2>各配置完整指标</h2>")
 
     head.append("<table><tr><th>配置</th><th>Precision</th><th>Recall</th><th>micro-F1</th>"
-                "<th>macro·按文档</th><th>完美率</th><th>全错率</th></tr>")
+                "<th>macro-F1（文档维度）</th><th>完美率</th><th>全错率</th></tr>")
     for n in names:
         a = aggs[n]
         hl = ' class="hl"' if a["micro"] == best else ""
@@ -568,7 +568,7 @@ def build_index(built):
 
             f'<h2>CORD 三轮纵向对比（同一批干净 92 条，可直接比）</h2>'
             f'<table><tr><th>方案</th><th>Precision</th><th>Recall</th><th>micro-F1</th>'
-            f'<th>macro·按文档</th><th>完美率</th></tr>{ladder_rows}</table>'
+            f'<th>macro-F1（文档维度）</th><th>完美率</th></tr>{ladder_rows}</table>'
             f'<h2>各轮入口</h2>{cards}'
 )
 
