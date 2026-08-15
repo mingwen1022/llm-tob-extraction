@@ -25,7 +25,8 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.eval import flatten, validity
-from shared.schema import get_model
+from shared.router import build_router_prompt
+from shared.schema import build_system_prompt, get_model
 
 OUT = "doc/eval"
 
@@ -40,6 +41,7 @@ ROUNDS = [
     dict(slug="round1_api_zeroshot", domain="cord",
          title="第一轮 · API 裸跑（零示例）· CORD 英文收据",
          desc="六个前沿/国产旗舰，完整 prompt，不给任何示例。同一批 CORD 干净 92 条。",
+         shots_note="不给示例——messages 只有 system + 待抽文档两条。",
          configs=[
              ("Qwen3.7-Max",      "runs/fewshot/Qwen_Qwen3_7-Max_s0.jsonl"),
              ("Gemini-3.5-Flash", "runs/fewshot/google_gemini-3_5-flash_s0.jsonl"),
@@ -54,6 +56,10 @@ ROUNDS = [
          desc="给 API 补上 in-context 示例后重测。Gemini 与 MiniMax 跑满 0/4/8/16/32/64 六档，"
               "其余四家跑 0 与 16 两档。本地基座 4B 也跑了 0/16/32 三档——"
               "同一个 4B、同一批示例、同一个 prompt，与第三轮的 LoRA 只差「示例进上下文还是进权重」。",
+         shots_note="system 之后插入 N 对 user/assistant 伪造对话：user=训练集收据原文，"
+                    "assistant=该条 gold JSON（原样 json.dumps，未清洗），最后才是待抽文档。"
+                    "示例取自 train.eval.jsonl 的「前 N 条干净样本」——先滤掉 8 条与测试集重复的，"
+                    "再取前 N，确定可复现。",
          # 用「模型 × shots」表达，页面会自动生成梯度矩阵
          matrix=dict(
              models=["Gemini-3.5-Flash", "MiniMax-M3", "Kimi-K3", "GLM-5.2",
@@ -95,7 +101,10 @@ ROUNDS = [
          title="第三轮 · 本地微调（LoRA）· CORD 英文收据",
          desc="同一基座 Qwen3.5-4B，四种用法横向对比：不给示例 / 给 16 条 / 给 32 条 / 把示例训进权重。"
               "prompt 与示例来源完全一致，唯一变量是示例放在上下文里还是放在权重里。",
+         shots_note="基座三档的示例注入方式与第二轮完全相同（同一套取法与去污染）；"
+                    "LoRA 那一档 messages 只有 system + 待抽文档，示例已在权重里。",
          baseline="基座 0-shot",
+         stored_prompt=["LoRA 微调"],
          configs=[("基座 0-shot", "runs/e0_full.jsonl"),
                   ("基座 +16示例", "runs/e0_full_s16.jsonl"),
                   ("基座 +32示例", "runs/e0_full_s32.jsonl"),
@@ -104,11 +113,15 @@ ROUNDS = [
          title="第三轮 · 本地微调（LoRA）· DuEE-fin 中文金融公告",
          desc="事件抽取，schema 是 22 字段的并集，单个事件只填其中一类。",
          baseline="基座",
+         shots_note="两档都不给示例——messages 只有 system + 待抽文档两条。",
+         stored_prompt=["LoRA 微调"],
          configs=[("基座", "runs/duee_e0.jsonl"), ("LoRA 微调", "runs/duee_e2.jsonl")]),
     dict(slug="round3_ccks", domain="ccks_fraud",
          title="第三轮 · 本地微调（LoRA）· CCKS-fraud 中文反欺诈",
          desc="社交媒体吐槽体文本，噪声远高于规范文档。",
          baseline="基座",
+         shots_note="两档都不给示例——messages 只有 system + 待抽文档两条。",
+         stored_prompt=["LoRA 微调"],
          configs=[("基座", "runs/ccks_e0.jsonl"), ("LoRA 微调", "runs/ccks_e2.jsonl")]),
 ]
 
@@ -160,6 +173,27 @@ input[type=search]{font:13px inherit;padding:5px 10px;border:1px solid #ced4da;b
  min-width:200px;background:#fff;color:inherit}
 .hit{color:#868e96;font-size:12px;margin:0 0 10px}
 .arrow{color:#adb5bd;margin:0 7px}
+.scroll{overflow-x:auto;max-width:100%}
+.sp{border:1px solid #e9ecef;border-radius:9px;margin:0 0 14px;font-size:13px}
+.sp summary{padding:9px 12px;cursor:pointer;color:#495057;font-weight:600}
+.sp summary:hover{background:#f8f9fa}
+.spbody{padding:0 12px 12px;color:#495057}
+.sprow{margin:6px 0 0 2px}
+.spn{display:inline-block;width:17px;height:17px;line-height:17px;text-align:center;
+ border-radius:99px;background:#e7f5ff;color:#1971c2;font-size:10.5px;margin-right:7px}
+.spnote{margin-top:10px;padding:8px 10px;background:#f8f9fa;border-radius:6px;font-size:12.5px}
+.scroll table{min-width:max-content}
+td.ok{background:#d3f9d8;color:#2b8a3e} td.mid{background:#fff3bf;color:#a06e00}
+td.bad{background:#ffe3e3;color:#c92a2a} td.dim{color:#ced4da}
+tr.ghost td{background:#fff5f5}
+.tag{margin-left:6px;font-size:10px;padding:1px 5px;border-radius:99px;
+ background:#ffe3e3;color:#c92a2a;vertical-align:middle}
+.tag.warn{background:#fff3bf;color:#a06e00}
+.sw{display:inline-block;padding:0 6px;border-radius:4px;background:#f1f3f5;font-size:11.5px}
+.sw.ok{background:#d3f9d8;color:#2b8a3e} .sw.mid{background:#fff3bf;color:#a06e00}
+.sw.bad{background:#ffe3e3;color:#c92a2a}
+.sub2{display:block;font-size:10px;opacity:.75;margin-top:1px}
+.rch{grid-template-columns:minmax(200px,1fr) 46px 190px 190px 90px}
 .gain{margin-left:7px;padding:1px 6px;border-radius:99px;background:#d3f9d8;color:#2b8a3e;font-size:11.5px}
 .bar2{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:0 0 10px;
  padding:8px 10px;background:#f8f9fa;border-radius:8px}
@@ -399,6 +433,47 @@ def build_round(rd) -> dict:
                     '<b>「给 API 加示例」的收益并不可预期</b>。</div>')
         head.append("<h2>各配置完整指标</h2>")
 
+    # ---- system prompt：注意 LoRA 与基座未必用同一个 ----
+    # LoRA 必须用它训练时那版 prompt（train/inference 一致），而基座为了公平用完整版。
+    # CORD 上这两者不同（218 vs 479 字符）；另外两域的训练 prompt 本身就是完整版，故相同。
+    full_p = build_system_prompt(domain, rich=True, types=True)
+    stored_p = load(DOMAIN_GOLD[domain][0])[0]["system"]      # 训练/eval 文件里存的那版
+    stored_names = [n for n in rd.get("stored_prompt", []) if n in names]
+    split = bool(stored_names) and stored_p != full_p
+
+    parts = ["<b>任务说明</b>（这是什么抽取器）",
+             "<b>字段说明</b>（每个字段是什么意思，人类可读）",
+             "<b>类型要求</b>（值一律输出 JSON 字符串，金额数量也要加引号）",
+             "<b>输出约定</b>（缺失填 null、列表无项填 []、只输出 JSON）",
+             "<b>compact schema</b>（一行字段图，由 Pydantic 模型自动生成）"]
+    if split:
+        others = [n for n in names if n not in stored_names]
+        summary = (f'system prompt 构成（<b>两版</b>：{esc("、".join(others))} 用 {len(full_p)} 字符完整版，'
+                   f'{esc("、".join(stored_names))} 用 {len(stored_p)} 字符训练版）')
+        body = (f'<div class="spnote"><b>⚠ 这一页的配置没有共用同一个 prompt，这是刻意的。</b><br>'
+                f'{esc("、".join(stored_names))} 是用 {len(stored_p)} 字符那版<b>训练</b>的，'
+                f'推理必须跟着用同一版，否则就是 train/inference 不一致；'
+                f'而基座侧为了不让它输在"话没说全"上，统一给了 {len(full_p)} 字符的完整版'
+                f'（多出字段说明与类型要求）。<br>'
+                f'<b>也就是说微调侧拿到的提示信息更少，这个对比是往对它不利的方向做的。</b></div>'
+                f'<div class="k">完整版（{len(full_p)} 字符）· 五段拼成，'
+                f'由 <code>build_system_prompt(domain, rich=True, types=True)</code> 生成</div>'
+                + "".join(f'<div class="sprow"><span class="spn">{i+1}</span>{t}</div>'
+                          for i, t in enumerate(parts))
+                + f'<pre>{esc(full_p)}</pre>'
+                f'<div class="k">训练版（{len(stored_p)} 字符）· 只有任务说明 + 输出约定 + schema，'
+                f'没有字段说明和类型要求</div><pre>{esc(stored_p)}</pre>')
+    else:
+        summary = f'system prompt 构成（{len(full_p)} 字符，本页所有配置共用同一个）'
+        body = ('五段拼成，由 <code>build_system_prompt(domain, rich=True, types=True)</code> 生成：'
+                + "".join(f'<div class="sprow"><span class="spn">{i+1}</span>{t}</div>'
+                          for i, t in enumerate(parts))
+                + f'<div class="k">实际发出去的原文</div><pre>{esc(full_p)}</pre>')
+    head.append(f'<details class="sp"><summary>{summary}</summary><div class="spbody">{body}'
+                + (f'<div class="spnote">示例注入：{esc(rd["shots_note"])}</div>'
+                   if rd.get("shots_note") else "")
+                + '</div></details>')
+
     head.append("<table><tr><th>配置</th><th>Precision</th><th>Recall</th><th>micro-F1</th>"
                 "<th>macro-F1（字段维度）</th><th>macro-F1（文档维度）</th>"
                 "<th>完美率</th><th>全错率</th></tr>")
@@ -413,6 +488,63 @@ def build_round(rd) -> dict:
             f'<td class="n">{a["perfect"]:.0%}</td>'
             f'<td class="n">{a["zero"]:.0%}</td></tr>')
     head.append("</table>")
+
+    # ---- per-field 明细：定位是哪个字段拖后腿 ----
+    # macro-F1（字段维度）只报警「有字段偏科」，是哪个字段得看这张表。
+    # 带上 gold 实例数，因为实例太少的字段 F1 不可信，不能拿来做优化决策。
+    gold_n = Counter(k for i in keep for k, _ in flatten(gold[i]["gt"]))
+    fbuckets = {}                       # 配置 -> {字段: [tp, fp, fn]}
+    for n in names:
+        b = {}
+        for st in results[n]:
+            for key, items in (("tp", 0), ("fp", 1), ("fn", 2)):
+                for k, _ in st[key + "_items"]:
+                    b.setdefault(k, [0, 0, 0])[items] += 1
+        fbuckets[n] = b
+    allf = set(gold_n) | {k for b in fbuckets.values() for k in b}
+    # gold 实例多的在前；gold 里不存在的「幻影字段」沉底，但仍逐行列出——
+    # 它们每个都占 macro-F1（字段维度）一票，合并展示就看不出票数了。
+    order = sorted(allf, key=lambda k: (-gold_n.get(k, 0), k))
+    ghost_keys = sorted(k for k in allf if not gold_n.get(k, 0))
+
+    def fcell(b, k, ghost=False):
+        v = b.get(k)
+        if not v:
+            return '<td class="n dim">—</td>'          # 该配置在这个字段上无任何输出
+        tp, fp, fn = v
+        den = 2 * tp + fp + fn
+        f = 2 * tp / den if den else 1.0
+        cls = "ok" if f >= 0.95 else ("bad" if f < 0.7 else ("mid" if f < 0.9 else ""))
+        # 幻影字段 TP 恒为 0，单看 0.000 看不出所以然，把 FP 摆到台面上
+        extra = f'<span class="sub2">FP={fp}</span>' if ghost else ""
+        return f'<td class="n {cls}" title="TP={tp} FP={fp} FN={fn}">{f:.3f}{extra}</td>'
+
+    head.append("<h2>各字段表现（per-field）</h2>")
+    head.append('<div class="scroll"><table><tr><th>字段</th><th>gold 实例数</th>'
+                + "".join(f"<th>{esc(n)}</th>" for n in names) + "</tr>")
+    for k in order:
+        gn = gold_n.get(k, 0)
+        gh = gn == 0
+        tag = ('<span class="tag">幻影</span>' if gh else
+               '<span class="tag warn">样本少</span>' if gn < 30 else "")
+        head.append(f'<tr{" class=ghost" if gh else ""}><td>{esc(k)}{tag}</td>'
+                    f'<td class="n">{gn}</td>'
+                    + "".join(fcell(fbuckets[n], k, gh) for n in names) + "</tr>")
+    head.append("</table></div>")
+    ghosts = ghost_keys
+    head.append('<div class="note">单元格颜色：'
+                '<span class="sw ok">≥0.95</span> <span class="sw">0.90~0.95</span> '
+                '<span class="sw mid">0.70~0.90</span> <span class="sw bad">&lt;0.70</span>；'
+                '悬停看该字段的 TP/FP/FN。<b>「样本少」(gold 实例 &lt; 30) 的字段 F1 不可靠</b>，'
+                '别拿它做优化决策。'
+                + (f'<br><b>幻影字段 = gold 里根本不存在的字段路径</b>，'
+                   f'本页出现 {len(ghosts)} 个：<code>{esc(" / ".join(ghosts))}</code>'
+                   f'（注意没有 <code>menu.</code> 前缀）。成因是模型输出了<b>裸列表</b> '
+                   f'<code>[{{...}}]</code> 而不是 <code>{{"menu":[...]}}</code>，拍平后路径整个错位。'
+                   f'它们 TP 恒为 0、F1 恒为 0，却同样占 macro-F1（字段维度）的票——'
+                   f'<b>这是该指标被拉低的直接原因</b>，剔掉它们重算会明显更高。'
+                   if ghosts else "")
+                + '</div>')
 
     # ---- 筛选按钮统计（以最后一个配置为主视角，通常是最好的那个）----
     main = names[-1]
@@ -546,7 +678,117 @@ def build_round(rd) -> dict:
     return dict(html=page, aggs=aggs, names=names, n=len(keep))
 
 
+ROUTER_FILE = "runs/orchestrator_eval_3domain.jsonl"
+ROUTER_LABEL = {"cord": "CORD 英文收据", "duee_fin": "DuEE-fin 中文金融公告",
+                "ccks_fraud": "CCKS-fraud 中文反欺诈"}
+
+
+def build_router():
+    """路由页：零样本判类，不是抽取任务，所以指标是准确率/混淆矩阵而非 F1。"""
+    rows = load(ROUTER_FILE)
+    # 数据里没存原文，用 gold 反查回各域测试集（45/45 可匹配）
+    idx = {}
+    for dom, (gp, _) in DOMAIN_GOLD.items():
+        for g in load(gp):
+            idx[(dom, json.dumps(g["gt"], ensure_ascii=False, sort_keys=True))] = g["user"]
+
+    doms = list(ROUTER_LABEL)
+    cm = {t: Counter() for t in doms}
+    for r in rows:
+        cm[r["true_domain"]][r["domain"]] += 1
+    n_ok = sum(1 for r in rows if r["domain"] == r["true_domain"])
+    acc = n_ok / len(rows)
+    route_s = sorted(r["latency"]["route_s"] for r in rows)
+    extract_s = sorted(r["latency"]["extract_s"] for r in rows)
+    med = lambda a: a[len(a) // 2]
+
+    head = [f'<div class="sub">零样本判类 · {len(rows)} 条（每域 15）· '
+            f'准确率 <b>{acc:.1%}</b>（{n_ok}/{len(rows)}）</div>']
+    head.append('<div class="note">⚠ 这一页与前三轮<b>不是同一类任务</b>：'
+                '前三轮评的是「抽取得准不准」（字段级 P/R/F1），'
+                '这里评的是「文档分到哪个域」（分类准确率）。两者不可混读。'
+                '<br>⚠ 这批数据由 <b>Ollama 服务的基座</b>跑出（2026-07-11）；'
+                '当前代码已改为用 PEFT <code>disable_adapter()</code> 临时回退到基座、不依赖外部服务。'
+                '同一个 Qwen3.5-4B、同一个 prompt，但服务栈不同，<b>未重跑验证</b>。</div>')
+
+    rp = build_router_prompt()
+    head.append(f'<details class="sp"><summary>路由 prompt（{len(rp)} 字符，'
+                f'选项由 SCHEMA_REGISTRY 自动生成）</summary>'
+                f'<div class="spbody"><div class="spnote">'
+                f'路由不训练分类器，直接让基座零样本判类；域列表来自 schema 注册表，'
+                f'加一个新域只需注册 schema，路由 prompt 自动包含它。'
+                f'</div><div class="k">实际发出去的原文</div><pre>{esc(rp)}</pre></div></details>')
+
+    head.append("<h2>混淆矩阵</h2>")
+    head.append('<div class="scroll"><table><tr><th>真实 \\ 预测</th>'
+                + "".join(f"<th>{esc(ROUTER_LABEL[d])}</th>" for d in doms)
+                + "<th>该域准确率</th></tr>")
+    for t in doms:
+        cells = "".join(
+            f'<td class="n {"ok" if p == t and cm[t][p] else ("bad" if cm[t][p] else "dim")}">'
+            f'{cm[t][p] or "—"}</td>' for p in doms)
+        tot = sum(cm[t].values())
+        head.append(f'<tr><td>{esc(ROUTER_LABEL[t])}</td>{cells}'
+                    f'<td class="n">{cm[t][t]/tot:.1%}</td></tr>')
+    head.append("</table></div>")
+
+    head.append("<h2>延迟拆解</h2>")
+    head.append('<table><tr><th>环节</th><th>中位</th><th>p90</th><th>占端到端</th></tr>'
+                f'<tr><td>路由（零样本判类）</td><td class="n">{med(route_s):.2f}s</td>'
+                f'<td class="n">{route_s[int(len(route_s)*0.9)]:.2f}s</td>'
+                f'<td class="n">{med(route_s)/(med(route_s)+med(extract_s)):.0%}</td></tr>'
+                f'<tr><td>抽取（切 adapter 后）</td><td class="n">{med(extract_s):.2f}s</td>'
+                f'<td class="n">{extract_s[int(len(extract_s)*0.9)]:.2f}s</td>'
+                f'<td class="n">{med(extract_s)/(med(route_s)+med(extract_s)):.0%}</td></tr>'
+                "</table>")
+    share = med(route_s) / (med(route_s) + med(extract_s))
+    head.append('<div class="note">Mac M1 MPS 未优化配置。'
+                f'<b>路由只占端到端的 {share:.0%}，而且它复用同一个常驻基座</b>——'
+                '不额外占显存、不需要第二个模型、不依赖外部服务。'
+                '加一个新域的边际成本只是训一个 adapter，路由侧零改动。</div>')
+
+    cards = []
+    for i, r in enumerate(rows):
+        txt = idx[(r["true_domain"], json.dumps(r["gold"], ensure_ascii=False, sort_keys=True))]
+        ok = r["domain"] == r["true_domain"]
+        cards.append(
+            f'<div class="c" data-tags="{"ok" if ok else "err"}" data-text="{esc(txt[:400])}">'
+            f'<div class="ch rch">'
+            f'<div class="q">{esc(txt[:110])}</div>'
+            f'<div class="p id">#{i}</div>'
+            f'<div class="p">{esc(ROUTER_LABEL[r["true_domain"]])}</div>'
+            f'<div class="p {"ok" if ok else "bad"}">{esc(ROUTER_LABEL[r["domain"]])}</div>'
+            f'<div class="p">{r["latency"]["route_s"]:.2f}s</div></div>'
+            f'<div class="b"><div class="k">输入原文</div><pre>{esc(txt[:1500])}</pre></div></div>')
+
+    n_err = len(rows) - n_ok
+    bar = ('<div class="bar">'
+           f'<button class="on" data-f="all">全部<span class="n">{len(rows)}</span></button>'
+           f'<button data-f="ok">判对<span class="n">{n_ok}</span></button>'
+           f'<button data-f="err">判错<span class="n">{n_err}</span></button>'
+           '<input type="search" id="q" placeholder="搜原文…"></div><div class="hit" id="hit"></div>')
+    chead = ('<div class="chead rch"><div>文档原文（点击展开）</div><div class="unit">#</div>'
+             '<div class="cn">真实域</div><div class="cn">路由判定</div>'
+             '<div class="cn">路由耗时</div></div>')
+
+    return (f'<!doctype html><meta charset=utf-8><title>路由 · 零样本文档判类</title>'
+            f'<style>{CSS}</style><body>'
+            f'<a class="back" href="index.html">← 返回评测目录</a>'
+            f'<h1>路由 · 零样本文档判类</h1>'
+            f'{"".join(head)}'
+            f'<h2>逐条明细</h2>{bar}{chead}{"".join(cards)}'
+            f'<script>{JS}</script>')
+
+
 def build_index(built):
+    rrows = load(ROUTER_FILE)
+    router_n = len(rrows)
+    router_acc = sum(1 for r in rrows if r["domain"] == r["true_domain"]) / router_n
+    _rs = sorted(r["latency"]["route_s"] for r in rrows)
+    _es = sorted(r["latency"]["extract_s"] for r in rrows)
+    router_med = _rs[len(_rs) // 2]
+    router_share = router_med / (router_med + _es[len(_es) // 2])
+
     rows = []
     for rd in ROUNDS:
         b = built[rd["slug"]]
@@ -601,11 +843,21 @@ def build_index(built):
             f'<th>macro-F1（字段维度）</th><th>macro-F1（文档维度）</th>'
             f'<th>完美率</th><th>全错率</th></tr>{ladder_rows}</table>'
             f'<h2>各轮入口</h2>{cards}'
+            f'<a class="card" href="router.html"><div class="t">附 · 路由：零样本文档判类</div>'
+            f'<div class="d2">不训练分类器，直接让同一个基座判文档属于哪个域，再切到对应 adapter。…</div>'
+            f'<div class="m">{router_n} 条 · 每域 15<br>'
+            f'准确率 <b>{router_acc:.1%}</b><span class="arrow">·</span>'
+            f'路由耗时中位 {router_med:.2f}s，占端到端 {router_share:.0%}</div></a>'
 )
 
 
 def main():
     os.makedirs(OUT, exist_ok=True)
+    print("[build] router ...", flush=True)
+    rp = os.path.join(OUT, "router.html")
+    with open(rp, "w") as f:
+        f.write(build_router())
+    print(f"        -> {rp}  ({os.path.getsize(rp)//1024} KB)")
     built = {}
     for rd in ROUNDS:
         print(f"[build] {rd['slug']} ...", flush=True)
