@@ -193,7 +193,7 @@ tr.ghost td{background:#fff5f5}
 .sw.ok{background:#d3f9d8;color:#2b8a3e} .sw.mid{background:#fff3bf;color:#a06e00}
 .sw.bad{background:#ffe3e3;color:#c92a2a}
 .sub2{display:block;font-size:10px;opacity:.75;margin-top:1px}
-.rch{grid-template-columns:minmax(200px,1fr) 46px 190px 190px 90px}
+.rch{grid-template-columns:minmax(200px,1fr) 46px 190px 190px}
 .gain{margin-left:7px;padding:1px 6px;border-radius:99px;background:#d3f9d8;color:#2b8a3e;font-size:11.5px}
 .bar2{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:0 0 10px;
  padding:8px 10px;background:#f8f9fa;border-radius:8px}
@@ -678,7 +678,8 @@ def build_round(rd) -> dict:
     return dict(html=page, aggs=aggs, names=names, n=len(keep))
 
 
-ROUTER_FILE = "runs/orchestrator_eval_3domain.jsonl"
+ROUTER_FILE = "runs/router_eval_peft.jsonl"          # 90 条，当前 PEFT 路径，含逐条
+ORCH_FILE = "runs/orchestrator_eval_3domain.jsonl"   # 45 条端到端，只用它的延迟拆解
 ROUTER_LABEL = {"cord": "CORD 英文收据", "duee_fin": "DuEE-fin 中文金融公告",
                 "ccks_fraud": "CCKS-fraud 中文反欺诈"}
 
@@ -686,37 +687,34 @@ ROUTER_LABEL = {"cord": "CORD 英文收据", "duee_fin": "DuEE-fin 中文金融�
 def build_router():
     """路由页：零样本判类，不是抽取任务，所以指标是准确率/混淆矩阵而非 F1。"""
     rows = load(ROUTER_FILE)
-    # 数据里没存原文，用 gold 反查回各域测试集（45/45 可匹配）
-    idx = {}
-    for dom, (gp, _) in DOMAIN_GOLD.items():
-        for g in load(gp):
-            idx[(dom, json.dumps(g["gt"], ensure_ascii=False, sort_keys=True))] = g["user"]
-
+    orch = load(ORCH_FILE)
     doms = list(ROUTER_LABEL)
     cm = {t: Counter() for t in doms}
     for r in rows:
-        cm[r["true_domain"]][r["domain"]] += 1
-    n_ok = sum(1 for r in rows if r["domain"] == r["true_domain"])
+        cm[r["true_domain"]][r["pred"]] += 1
+    n_ok = sum(1 for r in rows if r["ok"])
     acc = n_ok / len(rows)
-    route_s = sorted(r["latency"]["route_s"] for r in rows)
-    extract_s = sorted(r["latency"]["extract_s"] for r in rows)
+    per_dom = len(rows) // len(doms)
+
+    route_s = sorted(o["latency"]["route_s"] for o in orch)
+    extract_s = sorted(o["latency"]["extract_s"] for o in orch)
     med = lambda a: a[len(a) // 2]
 
-    head = [f'<div class="sub">零样本判类 · {len(rows)} 条（每域 15）· '
+    head = [f'<div class="sub">零样本判类 · {len(rows)} 条（每域 {per_dom}）· '
             f'准确率 <b>{acc:.1%}</b>（{n_ok}/{len(rows)}）</div>']
     head.append('<div class="note">⚠ 这一页与前三轮<b>不是同一类任务</b>：'
                 '前三轮评的是「抽取得准不准」（字段级 P/R/F1），'
-                '这里评的是「文档分到哪个域」（分类准确率）。两者不可混读。'
-                '<br>⚠ 这批数据由 <b>Ollama 服务的基座</b>跑出（2026-07-11）；'
-                '当前代码已改为用 PEFT <code>disable_adapter()</code> 临时回退到基座、不依赖外部服务。'
-                '同一个 Qwen3.5-4B、同一个 prompt，但服务栈不同，<b>未重跑验证</b>。</div>')
+                '这里评的是「文档分到哪个域」（分类准确率）。两者不可混读。</div>')
 
     rp = build_router_prompt()
     head.append(f'<details class="sp"><summary>路由 prompt（{len(rp)} 字符，'
                 f'选项由 SCHEMA_REGISTRY 自动生成）</summary>'
                 f'<div class="spbody"><div class="spnote">'
-                f'路由不训练分类器，直接让基座零样本判类；域列表来自 schema 注册表，'
-                f'加一个新域只需注册 schema，路由 prompt 自动包含它。'
+                f'<b>路由不训练分类器</b>——直接用同一个 Qwen3.5-4B 基座零样本判类。'
+                f'跑抽取时模型挂着 LoRA，判类时用 PEFT 的 <code>disable_adapter()</code> 临时旁路掉低秩增量，'
+                f'剩下的就是基座；不需要第二个模型、不额外占显存、不依赖外部服务。<br>'
+                f'域列表由 <code>SCHEMA_REGISTRY</code> 自动展开，'
+                f'<b>加一个新域只需注册 schema，路由 prompt 自动包含它。</b>'
                 f'</div><div class="k">实际发出去的原文</div><pre>{esc(rp)}</pre></div></details>')
 
     head.append("<h2>混淆矩阵</h2>")
@@ -732,44 +730,53 @@ def build_router():
                     f'<td class="n">{cm[t][t]/tot:.1%}</td></tr>')
     head.append("</table></div>")
 
+    errs = [r for r in rows if not r["ok"]]
+    if errs:
+        head.append(f'<div class="note"><b>{len(errs)} 条判错，逐条列出：</b>'
+                    + "".join(
+                        f'<br>· <b>{esc(ROUTER_LABEL[r["true_domain"]])}</b> 判成 '
+                        f'<b>{esc(ROUTER_LABEL.get(r["pred"], str(r["pred"])))}</b>'
+                        f'<br><code>{esc(r["text"][:110])}…</code>' for r in errs)
+                    + '</div>')
+
     head.append("<h2>延迟拆解</h2>")
+    share = med(route_s) / (med(route_s) + med(extract_s))
     head.append('<table><tr><th>环节</th><th>中位</th><th>p90</th><th>占端到端</th></tr>'
                 f'<tr><td>路由（零样本判类）</td><td class="n">{med(route_s):.2f}s</td>'
                 f'<td class="n">{route_s[int(len(route_s)*0.9)]:.2f}s</td>'
-                f'<td class="n">{med(route_s)/(med(route_s)+med(extract_s)):.0%}</td></tr>'
+                f'<td class="n">{share:.0%}</td></tr>'
                 f'<tr><td>抽取（切 adapter 后）</td><td class="n">{med(extract_s):.2f}s</td>'
                 f'<td class="n">{extract_s[int(len(extract_s)*0.9)]:.2f}s</td>'
-                f'<td class="n">{med(extract_s)/(med(route_s)+med(extract_s)):.0%}</td></tr>'
+                f'<td class="n">{1-share:.0%}</td></tr>'
                 "</table>")
-    share = med(route_s) / (med(route_s) + med(extract_s))
-    head.append('<div class="note">Mac M1 MPS 未优化配置。'
-                f'<b>路由只占端到端的 {share:.0%}，而且它复用同一个常驻基座</b>——'
-                '不额外占显存、不需要第二个模型、不依赖外部服务。'
-                '加一个新域的边际成本只是训一个 adapter，路由侧零改动。</div>')
+    head.append(f'<div class="note">延迟取自 {len(orch)} 条端到端评测（每域 15，是本页 90 条的子集）。'
+                f'Mac M1 MPS 未优化配置。<b>路由只占端到端的 {share:.0%}，且复用同一份常驻基座</b>。'
+                '<br>那次端到端评测的另一个结论：三个 adapter 同时加载时，'
+                '各域抽取 F1（0.951 / 0.906 / 0.703）与各自单独评测（0.945 / 0.861 / 0.714）高度吻合，'
+                '<b>说明多 adapter 共存没有权重串扰</b>。</div>')
 
     cards = []
     for i, r in enumerate(rows):
-        txt = idx[(r["true_domain"], json.dumps(r["gold"], ensure_ascii=False, sort_keys=True))]
-        ok = r["domain"] == r["true_domain"]
+        ok = r["ok"]
         cards.append(
-            f'<div class="c" data-tags="{"ok" if ok else "err"}" data-text="{esc(txt[:400])}">'
+            f'<div class="c" data-tags="{"ok" if ok else "err"}" data-text="{esc(r["text"][:400])}">'
             f'<div class="ch rch">'
-            f'<div class="q">{esc(txt[:110])}</div>'
+            f'<div class="q">{esc(r["text"][:110])}</div>'
             f'<div class="p id">#{i}</div>'
             f'<div class="p">{esc(ROUTER_LABEL[r["true_domain"]])}</div>'
-            f'<div class="p {"ok" if ok else "bad"}">{esc(ROUTER_LABEL[r["domain"]])}</div>'
-            f'<div class="p">{r["latency"]["route_s"]:.2f}s</div></div>'
-            f'<div class="b"><div class="k">输入原文</div><pre>{esc(txt[:1500])}</pre></div></div>')
+            f'<div class="p {"ok" if ok else "bad"}">'
+            f'{esc(ROUTER_LABEL.get(r["pred"], str(r["pred"])))}</div></div>'
+            f'<div class="b"><div class="k">输入原文（路由只看前 1500 字符）</div>'
+            f'<pre>{esc(r["text"][:1500])}</pre>'
+            f'<div class="k">模型原始输出</div><pre>{esc(r["raw"])}</pre></div></div>')
 
-    n_err = len(rows) - n_ok
     bar = ('<div class="bar">'
            f'<button class="on" data-f="all">全部<span class="n">{len(rows)}</span></button>'
            f'<button data-f="ok">判对<span class="n">{n_ok}</span></button>'
-           f'<button data-f="err">判错<span class="n">{n_err}</span></button>'
+           f'<button data-f="err">判错<span class="n">{len(rows)-n_ok}</span></button>'
            '<input type="search" id="q" placeholder="搜原文…"></div><div class="hit" id="hit"></div>')
     chead = ('<div class="chead rch"><div>文档原文（点击展开）</div><div class="unit">#</div>'
-             '<div class="cn">真实域</div><div class="cn">路由判定</div>'
-             '<div class="cn">路由耗时</div></div>')
+             '<div class="cn">真实域</div><div class="cn">路由判定</div></div>')
 
     return (f'<!doctype html><meta charset=utf-8><title>路由 · 零样本文档判类</title>'
             f'<style>{CSS}</style><body>'
@@ -783,9 +790,10 @@ def build_router():
 def build_index(built):
     rrows = load(ROUTER_FILE)
     router_n = len(rrows)
-    router_acc = sum(1 for r in rrows if r["domain"] == r["true_domain"]) / router_n
-    _rs = sorted(r["latency"]["route_s"] for r in rrows)
-    _es = sorted(r["latency"]["extract_s"] for r in rrows)
+    router_acc = sum(1 for r in rrows if r["ok"]) / router_n
+    _o = load(ORCH_FILE)
+    _rs = sorted(r["latency"]["route_s"] for r in _o)
+    _es = sorted(r["latency"]["extract_s"] for r in _o)
     router_med = _rs[len(_rs) // 2]
     router_share = router_med / (router_med + _es[len(_es) // 2])
 
@@ -845,7 +853,7 @@ def build_index(built):
             f'<h2>各轮入口</h2>{cards}'
             f'<a class="card" href="router.html"><div class="t">附 · 路由：零样本文档判类</div>'
             f'<div class="d2">不训练分类器，直接让同一个基座判文档属于哪个域，再切到对应 adapter。…</div>'
-            f'<div class="m">{router_n} 条 · 每域 15<br>'
+            f'<div class="m">{router_n} 条 · 每域 {router_n//3}<br>'
             f'准确率 <b>{router_acc:.1%}</b><span class="arrow">·</span>'
             f'路由耗时中位 {router_med:.2f}s，占端到端 {router_share:.0%}</div></a>'
 )

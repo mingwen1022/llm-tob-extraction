@@ -1,7 +1,12 @@
 """评测路由器：从各域 test 集抽样混合，测零样本分类准确率 + 混淆矩阵。
 
+两种后端跑同一套 prompt：
+  --backend peft    进程内加载基座 + adapter，用 disable_adapter() 临时回退到基座判类。
+                    与 run_orchestrator.py 的生产路径完全一致，不依赖外部服务。
+  --backend ollama  通过 HTTP 调本地 Ollama（GGUF 量化权重）。历史实现，保留用于对照。
+
 用法：
-  uv run python scripts/eval_router.py --n-per-domain 30
+  uv run python scripts/eval_router.py --n-per-domain 30 --out runs/router_eval.jsonl
 """
 from __future__ import annotations
 
@@ -37,9 +42,52 @@ def chat(model: str, messages: list[dict], timeout=60) -> str:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="qwen3.5:4b")
+    ap.add_argument("--model", default="qwen3.5:4b", help="ollama 后端的模型名")
+    ap.add_argument("--backend", default="peft", choices=["peft", "ollama"])
+    ap.add_argument("--base", default="Qwen/Qwen3.5-4B", help="peft 后端的基座")
+    ap.add_argument("--adapter", default="adapters/cord",
+                    help="peft 后端挂哪个 adapter——判类时会被 disable_adapter() 旁路掉，"
+                         "挂哪个都一样，只是为了复现生产时「基座常驻+adapter」的加载方式")
     ap.add_argument("--n-per-domain", type=int, default=30)
+    ap.add_argument("--out", default=None, help="逐条结果落盘（jsonl）")
     args = ap.parse_args()
+
+    ask = None
+    if args.backend == "peft":
+        import os as _os
+        _os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+        import torch
+        from transformers import AutoTokenizer
+        from peft import PeftModel
+        import transformers
+        device = ("cuda" if torch.cuda.is_available()
+                  else "mps" if torch.backends.mps.is_available() else "cpu")
+        tok = AutoTokenizer.from_pretrained(args.base, trust_remote_code=True)
+        mdl = None
+        for loader in ("AutoModelForImageTextToText", "AutoModelForCausalLM", "AutoModel"):
+            try:
+                mdl = getattr(transformers, loader).from_pretrained(
+                    args.base, dtype="auto", trust_remote_code=True)
+                break
+            except Exception:
+                continue
+        mdl = PeftModel.from_pretrained(mdl.to(device), args.adapter).to(device).eval()
+        print(f"[peft] device={device} base={args.base} adapter={args.adapter}"
+              f"  判类时 disable_adapter() 回退到基座")
+
+        def ask(messages):
+            try:
+                pr = tok.apply_chat_template(messages, tokenize=False,
+                                             add_generation_prompt=True, enable_thinking=False)
+            except TypeError:
+                pr = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            inp = tok(pr, return_tensors="pt").to(device)
+            with torch.no_grad(), mdl.disable_adapter():
+                o = mdl.generate(**inp, max_new_tokens=16, do_sample=False)
+            return tok.decode(o[0][inp["input_ids"].shape[1]:], skip_special_tokens=True)
+    else:
+        def ask(messages):
+            return chat(args.model, messages)
 
     router_system = build_router_prompt()
     samples = []  # (true_domain, text)
@@ -53,6 +101,7 @@ def main():
 
     confusion = Counter()  # (true, pred) -> count
     errors = []
+    records = []
     t0 = time.time()
     for i, (true_domain, text) in enumerate(samples):
         messages = [
@@ -60,18 +109,27 @@ def main():
             {"role": "user", "content": text[:1500]},  # 路由不需要全文，截断提速
         ]
         try:
-            raw = chat(args.model, messages)
+            raw = ask(messages)
             pred = parse_route_output(raw)
         except Exception as e:
             pred = None
             raw = f"__ERROR__ {e}"
         confusion[(true_domain, pred)] += 1
+        records.append({"true_domain": true_domain, "pred": pred, "raw": raw,
+                        "text": text, "ok": pred == true_domain})
         if pred != true_domain:
             errors.append((true_domain, pred, raw, text[:60]))
         if (i + 1) % 10 == 0:
             print(f"  {i+1}/{len(samples)}  ({(time.time()-t0)/(i+1):.2f}s/条)")
 
     print(f"\n耗时 {time.time()-t0:.1f}s\n")
+
+    if args.out:
+        os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+        with open(args.out, "w") as f:
+            for r in records:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        print(f"逐条结果 -> {args.out}  ({len(records)} 条)\n")
 
     # 混淆矩阵
     domains = list(SCHEMA_REGISTRY.keys())
